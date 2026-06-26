@@ -318,6 +318,7 @@ export class Card {
             return;
         }
         this.isAvatarUpgrading = true;
+        this.domAvatar.classList.add('stlp--lazyAvatarUpgrading');
         try {
             const fullImage = await preloadImage(src, { signal });
             if (!fullImage || signal?.aborted || !this.domAvatar?.isConnected) return;
@@ -337,6 +338,7 @@ export class Card {
             }
         } finally {
             this.isAvatarUpgrading = false;
+            this.domAvatar?.classList.remove('stlp--lazyAvatarUpgrading');
         }
     }
 

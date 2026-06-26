@@ -75,6 +75,31 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
     rotate: 360deg;
   }
 }
+@keyframes stlp--avatarPolishSweep {
+  0% {
+    translate: -150% 0;
+    opacity: 0;
+  }
+  18%, 70% {
+    opacity: 0.65;
+  }
+  100% {
+    translate: 150% 0;
+    opacity: 0;
+  }
+}
+@keyframes stlp--avatarPolishSpark {
+  0%, 100% {
+    scale: 0.9;
+    opacity: 0.55;
+    rotate: 0deg;
+  }
+  50% {
+    scale: 1.08;
+    opacity: 1;
+    rotate: 18deg;
+  }
+}
 .stlp--container {
   --stlp--cardHeight: 200px;
   --stlp--cardWidth: calc(var(--stlp--cardHeight) / 144 * 96);
@@ -638,6 +663,32 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar > .stlp--lazyAvatarImg.stlp--loaded {
   opacity: 1;
+}
+.stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar.stlp--lazyAvatarUpgrading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 35%, rgba(255 255 255 / 0.42), transparent 65%);
+  mix-blend-mode: screen;
+  animation: stlp--avatarPolishSweep 1400ms ease-in-out infinite;
+}
+.stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar.stlp--lazyAvatarUpgrading::after {
+  content: "";
+  position: absolute;
+  right: 0.55em;
+  top: 0.55em;
+  z-index: 5;
+  width: 1.15em;
+  height: 1.15em;
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255 255 255 / 0.95) 0 12%, transparent 14%),
+    conic-gradient(from 45deg, transparent 0 18%, rgba(255 255 255 / 0.92) 20% 28%, transparent 30% 68%, rgba(120 199 255 / 0.85) 70% 78%, transparent 80% 100%);
+  filter: drop-shadow(0 0 7px rgba(120 199 255 / 0.85));
+  animation: stlp--avatarPolishSpark 900ms ease-in-out infinite;
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar > .stlp--avatarProgress {
   position: absolute;
