@@ -13,15 +13,32 @@ import { waitForFrame } from './src/wait.js';
 // debugger;
 export const log = (...msg)=>console.log('[STL]', ...msg);
 
-export const findExpression = async (name) => {
+export const findExpression = async (name, { signal = null, timeoutMs = 2000 } = {}) => {
     for (const ext of lp.settings.extensions) {
+        if (signal?.aborted) return;
         const url = `/characters/${name}/${lp.settings.expression}.${ext}`;
-        const resp = await fetch(url, {
-            method: 'HEAD',
-            headers: getRequestHeaders(),
-        });
-        if (resp.ok) {
-            return url;
+        const controller = new AbortController();
+        const abort = ()=>controller.abort();
+        const timeout = setTimeout(abort, timeoutMs);
+        signal?.addEventListener('abort', abort, { once:true });
+        if (signal?.aborted) {
+            abort();
+            return;
+        }
+        try {
+            const resp = await fetch(url, {
+                method: 'HEAD',
+                headers: getRequestHeaders(),
+                signal: controller.signal,
+            });
+            if (resp.ok) {
+                return url;
+            }
+        } catch {
+            if (signal?.aborted) return;
+        } finally {
+            clearTimeout(timeout);
+            signal?.removeEventListener('abort', abort);
         }
     }
 };

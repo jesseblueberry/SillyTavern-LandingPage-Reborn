@@ -50,14 +50,13 @@ export class LandingPage {
     /**@type {HTMLElement}*/ startupLoadingLabelEl;
     /**@type {HTMLElement}*/ startupLoadingDetailEl;
     /**@type {HTMLElement}*/ startupLoadingBarEl;
-    /**@type {HTMLElement}*/ startupSlowModeButtonEl;
     /**@type {number}*/ startupLoadingProgress = 0;
     /**@type {number|null}*/ startupLoadingTimer = null;
-    /**@type {boolean}*/ useSlowConnectionMode = false;
-    /**@type {boolean}*/ startupFastTrackRequested = false;
-    /**@type {Promise<string>|null}*/ startupFastTrackPromise = null;
-    /**@type {Function|null}*/ startupFastTrackResolver = null;
-    /**@type {AbortController|null}*/ startupAbortController = null;
+    /**@type {IntersectionObserver|null}*/ lazyAvatarObserver = null;
+    /**@type {Array<{card:Card,index:number,seenAt:number}>}*/ lazyAvatarQueue = [];
+    /**@type {boolean}*/ lazyAvatarLoading = false;
+    /**@type {AbortController|null}*/ lazyAvatarAbortController = null;
+    /**@type {number}*/ lazyAvatarRunId = 0;
     /**@type {AbortController|null}*/ backgroundAbortController = null;
     /**@type {AbortController|null}*/ backgroundPreloadAbortController = null;
 
@@ -112,6 +111,7 @@ export class LandingPage {
     async load() {
         log('LandingPage.load');
         this.setStartupLoadingProgress(12, 'Gathering cards…');
+        this.setStartupLoadingDetail('Building text-first cards. Art will load after the page opens.');
         const compRecent = (a,b)=>{
             if (this.settings.showFavorites) {
                 if (a.char.fav && !b.char.fav) return -1;
@@ -120,18 +120,18 @@ export class LandingPage {
             return (b.char.date_last_chat ?? 0) - (a.char.date_last_chat ?? 0);
         };
         if (this.settings.numCards > 0) {
-            const entries = [...characters, ...groups]
-                .filter(it=>!this.settings.onlyFavorites || it.fav)
-                .map(char=>({
-                    char,
-                    card: (()=>{
-                        const card = new Card(char);
-                        card.onOpenChat = ()=>{
-                            this.dom.classList.add('stlp--busy');
-                        };
-                        return card;
-                    })(),
-                }));
+            const items = [...characters, ...groups].filter(it=>!this.settings.onlyFavorites || it.fav);
+            const entries = [];
+            for (let i = 0; i < items.length; i++) {
+                const char = items[i];
+                const card = new Card(char);
+                card.onOpenChat = ()=>{
+                    this.dom.classList.add('stlp--busy');
+                };
+                entries.push({ char, card });
+                const progress = 12 + Math.round(((i + 1) / Math.max(items.length, 1)) * 35);
+                this.setStartupLoadingProgress(progress, 'Gathering cards…');
+            }
 
             const byRecent = entries.toSorted(compRecent);
             const byFavorites = byRecent.filter(it=>it.card.isFavorite);
@@ -144,37 +144,13 @@ export class LandingPage {
             };
             this.availableTags = this.getAvailableTags(this.cardsByCategory.search);
             this.updateSearchResults();
-            this.setStartupLoadingProgress(42, 'Shuffling the deck…');
+            this.setStartupLoadingProgress(62, 'Sorting your deck…');
 
-            const allCards = Array.from(new Set(Object.values(this.cardsByCategory).flat()));
             this.cards = this.activeCategory === 'search'
                 ? this.searchResults.slice(0, this.settings.numCards)
                 : (this.cardsByCategory[this.activeCategory] ?? []);
-            if (this.useSlowConnectionMode || this.startupFastTrackRequested) {
-                this.setStartupLoadingDetail('Slow mode: skipping chat preloading and opening text grid now.');
-            } else {
-                const controller = new AbortController();
-                this.startupAbortController = controller;
-                const cardLoadPromise = Promise.all(allCards.map(card=>card.load({ signal:controller.signal })))
-                    .then(()=>'loaded')
-                    .catch(err=>{
-                        if (controller.signal.aborted) return 'slow-mode';
-                        throw err;
-                    });
-                const loadResult = await Promise.race([
-                    cardLoadPromise,
-                    this.getStartupFastTrackPromise(),
-                ]);
-                if (this.startupAbortController === controller) {
-                    this.startupAbortController = null;
-                }
-                if (loadResult === 'slow-mode' || this.useSlowConnectionMode || this.startupFastTrackRequested) {
-                    controller.abort();
-                    this.setStartupLoadingDetail('Slow mode: cancelled chat preloading and opening text grid now.');
-                } else {
-                    this.setStartupLoadingProgress(82, 'Dealing your hand…');
-                }
-            }
+            this.setStartupLoadingProgress(82, 'Dealing your hand…');
+            this.setStartupLoadingDetail('Cards are ready. Opening now; art will load one at a time.');
         } else {
             this.cards = [];
             this.cardEntries = new Map();
@@ -209,10 +185,6 @@ export class LandingPage {
 
     async preloadBackgrounds(signal = null) {
         log('LandingPage.preloadBackgrounds');
-        if (this.useSlowConnectionMode) {
-            log('LandingPage.preloadBackgrounds ABORTED slow mode');
-            return;
-        }
         let controller = null;
         if (!signal) {
             controller = new AbortController();
@@ -228,8 +200,8 @@ export class LandingPage {
     }
     async preloadMedia(url, intro = false, signal = null) {
         log('LandingPage.preloadMedia', intro ? 'intro' : '', url);
-        if (this.useSlowConnectionMode || signal?.aborted) {
-            log('LandingPage.preloadMedia ABORTED slow mode', intro ? 'intro' : '', url);
+        if (signal?.aborted) {
+            log('LandingPage.preloadMedia ABORTED', intro ? 'intro' : '', url);
             return;
         }
         if (this.videoCache[url]) return;
@@ -249,10 +221,10 @@ export class LandingPage {
                 }
                 log('video check done', intro ? 'intro' : '', baseUrl);
             }
-            if (this.useSlowConnectionMode || signal?.aborted) return;
+            if (signal?.aborted) return;
             const media = await fetch(url, { signal });
             const blob = await media.blob();
-            if (this.useSlowConnectionMode || signal?.aborted) return;
+            if (signal?.aborted) return;
             this.videoCache[baseUrl] = URL.createObjectURL(blob);
             if (!intro && /\.mp4$/i.test(baseUrl)) {
                 const baseUrlIntro = baseUrl.replace(/(\.[^.]+)$/, '-Intro$1');
@@ -268,7 +240,7 @@ export class LandingPage {
         try {
             return await fetch(url, options);
         } catch (err) {
-            if (options.signal?.aborted || this.useSlowConnectionMode) return null;
+            if (options.signal?.aborted) return null;
             throw err;
         }
     }
@@ -278,18 +250,13 @@ export class LandingPage {
         if (!this.dom) return;
         if (this.isStartingVideo) return;
         log('LandingPage.updateBackground');
-        if (this.useSlowConnectionMode) {
-            this.clearBackgroundMedia();
-            log('LandingPage.updateBackground ABORTED slow mode');
-            return;
-        }
         this.isStartingVideo = true;
         const controller = new AbortController();
         this.backgroundAbortController?.abort();
         this.backgroundAbortController = controller;
         const signal = controller.signal;
         await this.bgResultUpdatePromise ?? Promise.resolve();
-        if (this.useSlowConnectionMode || signal.aborted) {
+        if (signal.aborted) {
             this.isStartingVideo = false;
             return;
         }
@@ -372,10 +339,10 @@ export class LandingPage {
                             this.intro.src = urlIntro;
                         }
                         while (!appReady) {
-                            if (this.useSlowConnectionMode || signal.aborted) return;
+                            if (signal.aborted) return;
                             await delay(100);
                         }
-                        if (this.useSlowConnectionMode || signal.aborted) return;
+                        if (signal.aborted) return;
                         this.intro.play();
                         const resolver = ()=>{
                             this.intro.removeEventListener('ended', resolve);
@@ -385,7 +352,7 @@ export class LandingPage {
                         this.intro.addEventListener('ended', resolver, { once:true });
                         this.intro.addEventListener('error', resolver, { once:true });
                     });
-                    if (this.useSlowConnectionMode || signal.aborted) {
+                    if (signal.aborted) {
                         this.clearBackgroundMedia();
                         this.isStartingVideo = false;
                         return;
@@ -448,34 +415,6 @@ export class LandingPage {
             this.dom.style.backgroundImage = '';
         }
     }
-
-    getStartupFastTrackPromise() {
-        if (!this.startupFastTrackPromise) {
-            this.startupFastTrackPromise = new Promise(resolve=>{
-                this.startupFastTrackResolver = resolve;
-            });
-        }
-        return this.startupFastTrackPromise;
-    }
-
-    requestStartupFastTrack() {
-        this.useSlowConnectionMode = true;
-        this.startupFastTrackRequested = true;
-        this.startupAbortController?.abort();
-        this.backgroundAbortController?.abort();
-        this.backgroundPreloadAbortController?.abort();
-        this.clearBackgroundMedia();
-        this.setStartupLoadingProgress(Math.max(this.startupLoadingProgress, 86), 'Opening slow mode…');
-        this.setStartupLoadingDetail('Slow mode: cancelling heavy preloads and opening text-only cards.');
-        if (this.startupSlowModeButtonEl) {
-            this.startupSlowModeButtonEl.disabled = true;
-            this.startupSlowModeButtonEl.textContent = 'Slow Connection Mode enabled';
-        }
-        this.startupFastTrackResolver?.('slow-mode');
-        this.startupFastTrackResolver = null;
-    }
-
-
 
     async fadeOut() {
         if (!this.fader) this.renderFader();
@@ -634,6 +573,7 @@ export class LandingPage {
         return this.dom;
     }
     unrender() {
+        this.resetLazyAvatarLoader();
         this.fadeIn().then(()=>{
             this.fader?.remove();
             this.fader = null;
@@ -645,6 +585,9 @@ export class LandingPage {
         this.isStartingVideo = false;
         this.teardownStartupLoading();
         this.endInput();
+        if (this.sheld) {
+            this.sheld.style.zIndex = '';
+        }
     }
 
 
@@ -657,39 +600,91 @@ export class LandingPage {
         ];
     }
 
+    resetLazyAvatarLoader() {
+        this.lazyAvatarRunId++;
+        this.lazyAvatarObserver?.disconnect();
+        this.lazyAvatarObserver = null;
+        this.lazyAvatarQueue = [];
+        this.lazyAvatarLoading = false;
+        this.lazyAvatarAbortController?.abort();
+        this.lazyAvatarAbortController = null;
+    }
+
+    enqueueLazyAvatar(card, index) {
+        if (!card?.dom?.isConnected || card.isAvatarLoaded) return;
+        if (this.lazyAvatarQueue.some(item=>item.card === card)) return;
+        this.lazyAvatarQueue.push({ card, index, seenAt:performance.now() });
+        this.processLazyAvatarQueue();
+    }
+
+    async processLazyAvatarQueue() {
+        if (this.lazyAvatarLoading) return;
+        this.lazyAvatarLoading = true;
+        this.lazyAvatarAbortController = new AbortController();
+        const signal = this.lazyAvatarAbortController.signal;
+        const runId = this.lazyAvatarRunId;
+        try {
+            while (runId === this.lazyAvatarRunId && this.lazyAvatarQueue.length) {
+                this.lazyAvatarQueue.sort((a,b)=>a.seenAt - b.seenAt || a.index - b.index);
+                const { card, index } = this.lazyAvatarQueue.shift();
+                if (!card.dom?.isConnected || card.isAvatarLoaded) continue;
+                card.dom.setAttribute('aria-busy', 'true');
+                await card.hydrateAvatar(this.settings, {
+                    signal,
+                    onProgress: progress=>{
+                        card.dom?.style.setProperty('--stlp--avatarLoadProgress', `${progress}%`);
+                    },
+                });
+                card.dom?.removeAttribute('aria-busy');
+                this.setStartupLoadingDetail(`Loaded card art ${index + 1}/${this.cards.length}: ${card.name}`);
+                await waitForFrame();
+            }
+        } finally {
+            if (runId === this.lazyAvatarRunId) {
+                this.lazyAvatarLoading = false;
+                this.lazyAvatarAbortController = null;
+            }
+        }
+    }
+
+    observeLazyAvatar(root, card, index) {
+        if (!this.lazyAvatarObserver && 'IntersectionObserver' in window) {
+            this.lazyAvatarObserver = new IntersectionObserver(entries=>{
+                entries
+                    .filter(entry=>entry.isIntersecting)
+                    .sort((a,b)=>Number(a.target.dataset.stlpIndex ?? 0) - Number(b.target.dataset.stlpIndex ?? 0))
+                    .forEach(entry=>{
+                        this.lazyAvatarObserver?.unobserve(entry.target);
+                        this.enqueueLazyAvatar(entry.target.__stlpCard, Number(entry.target.dataset.stlpIndex ?? 0));
+                    });
+            }, { root, rootMargin:'500px 300px', threshold:0.01 });
+        }
+        card.dom.dataset.stlpIndex = String(index);
+        card.dom.__stlpCard = card;
+        if (this.lazyAvatarObserver) {
+            this.lazyAvatarObserver.observe(card.dom);
+        } else {
+            this.enqueueLazyAvatar(card, index);
+        }
+    }
+
     async renderCardsForCategory(root, category) {
+        this.resetLazyAvatarLoader();
         root.setAttribute('data-category', category);
         root.innerHTML = '';
         this.cards = category === 'search'
             ? this.searchResults.slice(0, this.settings.numCards)
             : (this.cardsByCategory[category] ?? []);
         const total = this.cards.length;
-        const els = [];
         for (let i = 0; i < total; i++) {
             const card = this.cards[i];
-            if (!this.useSlowConnectionMode) {
-                this.setStartupLoadingDetail(`Loading thumbnails ${i + 1}/${total}: ${card.name}`);
-            }
-            const settings = this.useSlowConnectionMode
-                ? { ...this.settings, showExpression:false, loadAvatars:false }
-                : this.settings;
-            const el = this.useSlowConnectionMode
-                ? await card.render(settings)
-                : await Promise.race([
-                    card.render(settings),
-                    this.getStartupFastTrackPromise(),
-                ]);
-            if (el === 'slow-mode') {
-                root.innerHTML = '';
-                await this.renderCardsForCategory(root, category);
-                return;
-            }
-            els.push(el);
+            const el = await card.render(this.settings);
+            root.append(el);
+            this.observeLazyAvatar(root, card, i);
+            const progress = 82 + Math.round(((i + 1) / Math.max(total, 1)) * 12);
+            this.setStartupLoadingProgress(progress, 'Dealing your hand…');
         }
-        els.forEach(it=>root.append(it));
-        if (this.useSlowConnectionMode) {
-            this.setStartupLoadingDetail('Slow connection mode is active: cards are text-first, avatars are skipped.');
-        }
+        this.setStartupLoadingDetail('Loading card art one at a time in the background.');
     }
 
     getAvailableTags(cards) {
@@ -803,7 +798,7 @@ export class LandingPage {
 
 
     async renderContent() {
-        this.setStartupLoadingProgress(100, 'Ready!');
+        this.setStartupLoadingProgress(88, 'Rendering cards…');
         const container = this.dom;
         container?.querySelector('.stlp--wrapper')?.remove();
         container?.querySelector('.stlp--menu')?.remove();
@@ -940,6 +935,7 @@ export class LandingPage {
                 inputDisplayContainer.append(inputDisplay);
             }
         }
+        this.setStartupLoadingProgress(100, 'Ready!');
         this.teardownStartupLoading(true);
     }
 
@@ -979,34 +975,11 @@ export class LandingPage {
                 }
                 loading.append(progress);
             }
-            const slowModeButton = document.createElement('button'); {
-                this.startupSlowModeButtonEl = slowModeButton;
-                slowModeButton.type = 'button';
-                slowModeButton.classList.add('stlp--startupSkipThumbs');
-                slowModeButton.textContent = 'Use Slow Connection Mode';
-                slowModeButton.addEventListener('click', ()=>{
-                    this.requestStartupFastTrack();
-                });
-                loading.append(slowModeButton);
-            }
             this.dom.append(loading);
-        }
-        this.useSlowConnectionMode = false;
-        this.startupFastTrackRequested = false;
-        this.startupFastTrackPromise = null;
-        this.startupFastTrackResolver = null;
-        if (this.startupSlowModeButtonEl) {
-            this.startupSlowModeButtonEl.disabled = false;
-            this.startupSlowModeButtonEl.textContent = 'Use Slow Connection Mode';
         }
         this.startupLoadingProgress = 5;
         this.setStartupLoadingProgress(5, 'Starting landing page…');
-        this.setStartupLoadingDetail('Checking connection and queueing assets…');
-        if (this.startupLoadingTimer !== null) clearInterval(this.startupLoadingTimer);
-        this.startupLoadingTimer = setInterval(()=>{
-            if (this.startupLoadingProgress >= 92) return;
-            this.setStartupLoadingProgress(this.startupLoadingProgress + 1);
-        }, 230);
+        this.setStartupLoadingDetail('Waiting for SillyTavern to finish initializing…');
     }
     setStartupLoadingProgress(value, label = null) {
         this.startupLoadingProgress = Math.max(0, Math.min(100, value));
@@ -1036,7 +1009,6 @@ export class LandingPage {
                 this.startupLoadingLabelEl = null;
                 this.startupLoadingDetailEl = null;
                 this.startupLoadingBarEl = null;
-                this.startupSlowModeButtonEl = null;
             }, 220);
             return;
         }
@@ -1045,7 +1017,6 @@ export class LandingPage {
         this.startupLoadingLabelEl = null;
         this.startupLoadingDetailEl = null;
         this.startupLoadingBarEl = null;
-        this.startupSlowModeButtonEl = null;
     }
 
 
@@ -1059,6 +1030,7 @@ export class LandingPage {
         if (this.settings.isEnabled) {
             this.sheld.style.opacity = '0';
             this.sheld.style.pointerEvents = 'none';
+            this.sheld.style.zIndex = '';
         }
     }
     /**

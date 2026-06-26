@@ -4,6 +4,18 @@ import { applyTagsOnCharacterSelect } from '../../../../tags.js';
 import { Member } from './Member.js';
 import { waitForFrame } from './wait.js';
 
+const AVATAR_TIMEOUT_MS = 4500;
+
+const makeAvatarImage = (memImg)=>{
+    const img = document.createElement('img');
+    img.classList.add('stlp--avatarImg', 'stlp--lazyAvatarImg');
+    img.style.width = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
+    img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
+    img.style.marginRight = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth} / -2)`;
+    img.src = memImg.src;
+    return img;
+};
+
 export class Card {
     /**@type {String}*/ name;
     /**@type {Member[]}*/ members;
@@ -23,6 +35,9 @@ export class Card {
     /**@type {HTMLImageElement}*/ avatarImg;
 
     /**@type {Boolean}*/ isLoaded = false;
+    /**@type {Boolean}*/ isAvatarLoaded = false;
+    /**@type {Boolean}*/ isAvatarLoading = false;
+    /**@type {Array<{src:string,width:string,flex:string,marginRight:string}>}*/ avatarImageData = [];
 
     /**@type {HTMLElement}*/ dom;
     /**@type {HTMLElement}*/ domName;
@@ -123,6 +138,35 @@ export class Card {
         });
     }
 
+    async loadAvatarWithTimeout(options = {}) {
+        return new Promise((resolve, reject)=>{
+            const img = new Image();
+            const signal = options.signal ?? null;
+            const timeoutMs = options.timeoutMs ?? AVATAR_TIMEOUT_MS;
+            const cleanup = ()=>{
+                clearTimeout(timeout);
+                signal?.removeEventListener('abort', abort);
+            };
+            const abort = ()=>{
+                cleanup();
+                img.src = '';
+                reject(new DOMException('Image load aborted', 'AbortError'));
+            };
+            const timeout = setTimeout(abort, timeoutMs);
+            signal?.addEventListener('abort', abort, { once:true });
+            if (signal?.aborted) return abort();
+            img.addEventListener('load', ()=>{
+                cleanup();
+                resolve(img);
+            }, { once:true });
+            img.addEventListener('error', ()=>{
+                cleanup();
+                reject(new Error(`Could not load avatar: ${this.avatar}`));
+            }, { once:true });
+            img.src = this.isGroup ? this.avatar : `/characters/${this.avatar}`;
+        });
+    }
+
     updateLastMembers(mesList) {
         if (this.isGroup) {
             const chars = mesList
@@ -150,7 +194,100 @@ export class Card {
     }
 
     getLastMembers(num) {
-        return this.lastMembers.slice(0, num);
+        const source = this.lastMembers?.length ? this.lastMembers : this.members;
+        return (source ?? []).filter(Boolean).slice(0, num);
+    }
+
+    setAvatarProgress(value) {
+        if (!this.domAvatar) return;
+        this.domAvatar.style.setProperty('--stlp--avatarLoadProgress', `${Math.max(0, Math.min(100, value))}%`);
+    }
+
+    restoreHydratedAvatar() {
+        if (!this.domAvatar || !this.avatarImageData.length) return;
+        this.domAvatar.dataset.stlpLoaded = 'true';
+        this.domAvatar.querySelector('.stlp--avatarPlaceholder')?.remove();
+        this.domAvatar.querySelector('.stlp--avatarProgress')?.remove();
+        this.avatarImageData.forEach(data=>{
+            const img = document.createElement('img');
+            img.classList.add('stlp--avatarImg', 'stlp--lazyAvatarImg', 'stlp--loaded');
+            img.style.width = data.width;
+            img.style.flex = data.flex;
+            img.style.marginRight = data.marginRight;
+            img.src = data.src;
+            this.domAvatar.append(img);
+        });
+    }
+
+    async hydrateAvatar(settings, { signal = null, onProgress = null } = {}) {
+        if (!this.domAvatar || this.isAvatarLoaded || this.isAvatarLoading) return;
+        this.isAvatarLoading = true;
+        this.domAvatar.dataset.stlpLoading = 'true';
+        this.domAvatar.classList.add('stlp--lazyAvatarLoading');
+        this.setAvatarProgress(5);
+        onProgress?.(5);
+
+        const placeholder = this.domAvatar.querySelector('.stlp--avatarPlaceholder');
+        const imgs = [];
+        try {
+            if (settings.showExpression) {
+                const members = this.getLastMembers(settings.numAvatars);
+                const total = Math.max(members.length, 1);
+                for (let i = 0; i < members.length; i++) {
+                    if (signal?.aborted) return;
+                    const mem = members[i];
+                    try {
+                        const memImg = await mem.loadExpression(settings.expression, this.chatMetadata?.triggerCards?.costumes?.[mem.name], {
+                            signal,
+                            timeoutMs: AVATAR_TIMEOUT_MS,
+                        });
+                        imgs.push(makeAvatarImage(memImg));
+                    } catch {
+                        if (signal?.aborted) return;
+                        const fallbackImg = await mem.loadAvatar({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
+                        imgs.push(makeAvatarImage(fallbackImg));
+                    }
+                    const progress = 10 + Math.round(((i + 1) / total) * 75);
+                    this.setAvatarProgress(progress);
+                    onProgress?.(progress);
+                }
+            } else {
+                const memImg = await this.loadAvatarWithTimeout({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
+                imgs.push(makeAvatarImage(memImg));
+                this.setAvatarProgress(85);
+                onProgress?.(85);
+            }
+
+            if (!imgs.length) {
+                const memImg = await this.loadAvatarWithTimeout({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
+                imgs.push(makeAvatarImage(memImg));
+            }
+
+            if (!this.domAvatar?.isConnected || signal?.aborted) return;
+            imgs.forEach(img=>this.domAvatar.append(img));
+            await waitForFrame();
+            imgs.forEach(img=>img.classList.add('stlp--loaded'));
+            this.avatarImageData = imgs.map(img=>({
+                src: img.src,
+                width: img.style.width,
+                flex: img.style.flex,
+                marginRight: img.style.marginRight,
+            }));
+            this.isAvatarLoaded = true;
+            this.domAvatar.dataset.stlpLoaded = 'true';
+            this.setAvatarProgress(100);
+            onProgress?.(100);
+            setTimeout(()=>placeholder?.remove(), 450);
+        } catch (err) {
+            if (!signal?.aborted) {
+                console.warn('[STL] lazy avatar failed', this.name, err);
+                this.domAvatar?.classList.add('stlp--lazyAvatarFailed');
+            }
+        } finally {
+            this.isAvatarLoading = false;
+            this.domAvatar?.classList.remove('stlp--lazyAvatarLoading');
+            delete this.domAvatar?.dataset.stlpLoading;
+        }
     }
 
 
@@ -200,35 +337,20 @@ export class Card {
                 }
                 const ava = document.createElement('div'); {
                     this.domAvatar = ava;
-                    ava.classList.add('stlp--avatar');
-                    if (settings.loadAvatars === false) {
-                        const placeholder = document.createElement('div'); {
-                            placeholder.classList.add('stlp--avatarPlaceholder');
-                            placeholder.textContent = this.isGroup ? 'Group' : 'Character';
-                        }
+                    ava.classList.add('stlp--avatar', 'stlp--lazyAvatar');
+                    ava.style.setProperty('--stlp--avatarLoadProgress', '0%');
+                    const placeholder = document.createElement('div'); {
+                        placeholder.classList.add('stlp--avatarPlaceholder', 'stlp--avatarPlaceholderName');
+                        placeholder.textContent = this.name || (this.isGroup ? 'Group' : 'Character');
+                        placeholder.title = this.name;
                         ava.append(placeholder);
-                    } else if (settings.showExpression) {
-                        await Promise.all(this.getLastMembers(settings.numAvatars).map(async(mem)=>{
-                            const memImg = await mem.loadExpression(settings.expression, this.chatMetadata?.triggerCards?.costumes?.[mem.name]);
-                            const img = document.createElement('img'); {
-                                img.classList.add('stlp--avatarImg');
-                                img.style.width = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-                                img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-                                img.style.marginRight = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth} / -2)`;
-                                img.src = memImg.src;
-                            }
-                            ava.append(img);
-                        }));
-                    } else {
-                        const memImg = await this.loadAvatar();
-                        const img = document.createElement('img'); {
-                            img.classList.add('stlp--avatarImg');
-                            img.style.width = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-                            img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-                            img.style.marginRight = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth} / -2)`;
-                            img.src = memImg.src;
-                        }
-                        ava.append(img);
+                    }
+                    const progress = document.createElement('div'); {
+                        progress.classList.add('stlp--avatarProgress');
+                        ava.append(progress);
+                    }
+                    if (this.isAvatarLoaded) {
+                        this.restoreHydratedAvatar();
                     }
                     item.append(ava);
                 }

@@ -213,25 +213,6 @@ html > body.stlp--hideTopBar:has(.stlp--container) > {
 				transition: width 180ms ease-out;
 			}
 		}
-		.stlp--startupSkipThumbs {
-			margin-top: 10px;
-			border: 1px solid rgba(255 255 255 / 0.45);
-			background: rgba(20 20 20 / 0.35);
-			color: rgb(245 245 245 / 0.95);
-			border-radius: 999px;
-			padding: 6px 12px;
-			font-size: 12px;
-			cursor: pointer;
-			transition: 150ms ease;
-			&:hover {
-				background: rgba(40 40 40 / 0.55);
-				border-color: rgba(255 255 255 / 0.65);
-			}
-			&:disabled {
-				opacity: 0.7;
-				cursor: default;
-			}
-		}
 	}
 
 	.stlp--menu {
@@ -454,6 +435,62 @@ html > body.stlp--hideTopBar:has(.stlp--container) > {
 						flex: 0 0 auto;
 						height: var(--stlp--cardHeight);
 						width: 100%;
+						&.stlp--lazyAvatar {
+							position: relative;
+							display: flex;
+							justify-content: center;
+							overflow: hidden;
+							--stlp--avatarLoadProgress: 0%;
+							> .stlp--avatarPlaceholder {
+								position: absolute;
+								inset: 0;
+								z-index: 1;
+								padding: 0.7em;
+								text-align: center;
+								overflow: hidden;
+								text-overflow: ellipsis;
+								text-wrap: balance;
+								transition: opacity 200ms ease;
+							}
+							> .stlp--lazyAvatarImg {
+								opacity: 0;
+								transition: opacity 420ms ease;
+								z-index: 2;
+							}
+							> .stlp--lazyAvatarImg.stlp--loaded {
+								opacity: 1;
+							}
+							> .stlp--avatarProgress {
+								position: absolute;
+								left: 50%;
+								bottom: 0.65em;
+								z-index: 3;
+								width: 1.3em;
+								height: 1.3em;
+								border-radius: 50%;
+								translate: -50% 0;
+								opacity: 0;
+								pointer-events: none;
+								background:
+									radial-gradient(circle, rgba(8 13 28 / 0.9) 0 43%, transparent 45%),
+									conic-gradient(#78c7ff var(--stlp--avatarLoadProgress), rgba(255 255 255 / 0.18) 0);
+								box-shadow: 0 0 10px rgba(0 0 0 / 0.45);
+								transition: opacity 160ms ease;
+							}
+							&.stlp--lazyAvatarLoading {
+								> .stlp--avatarPlaceholder {
+									opacity: 0.45;
+								}
+								> .stlp--avatarProgress {
+									opacity: 1;
+								}
+							}
+							&.stlp--lazyAvatarFailed > .stlp--avatarProgress {
+								background:
+									radial-gradient(circle, rgba(8 13 28 / 0.9) 0 43%, transparent 45%),
+									conic-gradient(#ff8484 100%, rgba(255 255 255 / 0.18) 0);
+							}
+						}
 						> .stlp--avatarImg:last-child {
 							margin-right: 0 !important;
 						}
