@@ -1,107 +1,280 @@
-const MIN_ITEMS = 5;
-const MIN_MS = 2000;
-const RECENT = 5;
-const fmt = (sec)=>{ sec=Math.max(1, Math.ceil(sec)); if(sec<60)return `${sec}s`; const m=Math.floor(sec/60), s=sec%60; return s?`${m}m ${s}s`:`${m}m`; };
-const make = ()=>({ start:performance.now(), total:0, done:0, samples:[], last:null });
-const reset = (m,total=0)=>{ m.start=performance.now(); m.total=total; m.done=0; m.samples=[]; m.last=null; };
-const avg = (a)=>a.reduce((x,y)=>x+y,0)/a.length;
-const ready = (m)=>m.done>=MIN_ITEMS && performance.now()-m.start>=MIN_MS;
-const count = (m,n)=>`${n} ${Math.min(m.done, m.total || m.done)}/${m.total || m.done || '?'}`;
-const serial = (m)=>{
-    const total=m.total||m.done, left=total-m.done;
-    if(left<=0)return 0;
-    if(!ready(m))return null;
-    const all=avg(m.samples)/1000;
-    const recent=avg(m.samples.slice(-RECENT))/1000;
-    const per=Math.max(all,recent);
-    const stalled=(performance.now()-(m.last??m.start))/1000;
-    return stalled>per ? stalled+(per*Math.max(0,left-1)) : per*left;
+import { characters } from '../../../../../script.js';
+import { groups } from '../../../../group-chats.js';
+import { Card } from './Card.js';
+import { LandingPage } from './LandingPage.js';
+import { waitForFrame } from './wait.js';
+
+const seenSettings = (lp)=>({ ...lp.settings, lazyLoadAvatars:true, loadAvatars:false, showExpression:false });
+const realSettings = (lp)=>({ ...lp.settings, lazyLoadAvatars:false, loadAvatars:true });
+
+const makeImg = (memImg)=>{
+    const img = document.createElement('img');
+    img.classList.add('stlp--avatarImg', 'stlp--lazyAvatarImg');
+    img.style.width = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
+    img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
+    img.style.marginRight = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth} / -2)`;
+    img.src = memImg.src;
+    return img;
 };
-const parallel = (m)=>{
-    const total=m.total||m.done, left=total-m.done;
-    if(left<=0)return 0;
-    if(!ready(m))return null;
-    const elapsed=(performance.now()-m.start)/1000;
-    const stalled=(performance.now()-(m.last??m.start))/1000;
-    const recent=avg(m.samples.slice(-RECENT))/1000;
-    return Math.max((elapsed/m.done)*left, stalled, recent*left);
+
+const installStyles = ()=>{
+    if (document.getElementById('stlp-lazy-card-style')) return;
+    const style = document.createElement('style');
+    style.id = 'stlp-lazy-card-style';
+    style.textContent = `
+        .stlp--avatar.stlp--lazyAvatar {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .stlp--avatar.stlp--lazyAvatar > .stlp--avatarPlaceholder {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            padding: 0.7em;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-wrap: balance;
+        }
+        .stlp--avatar.stlp--lazyAvatar > .stlp--lazyAvatarImg {
+            opacity: 0;
+            transition: opacity 420ms ease;
+            z-index: 2;
+        }
+        .stlp--avatar.stlp--lazyAvatar > .stlp--lazyAvatarImg.stlp--loaded {
+            opacity: 1;
+        }
+        .stlp--avatar.stlp--lazyAvatarLoading > .stlp--avatarPlaceholder {
+            opacity: 0.45;
+        }
+        body:not(:has(.stlp--container)) #sheld { z-index: auto !important; }
+    `;
+    document.head.append(style);
 };
-const st = (lp)=>lp.__stlpEta ??= { phase:'waiting', data:make(), cards:make(), timer:null };
-const ensureLine = (lp)=>{
-    if(!lp?.startupLoadingEl)return null;
-    if(lp.__stlpEtaLine?.isConnected)return lp.__stlpEtaLine;
-    const el=document.createElement('div');
-    el.className='stlp--startupLoadingEta';
-    el.textContent='Waiting for startup. Card loading has not started yet.';
-    lp.__stlpEtaLine=el;
-    lp.startupLoadingEl.querySelector('.stlp--startupLoadingProgress')?.insertAdjacentElement('afterend',el);
-    return el;
-};
-const eta = (s)=>s.phase==='cards'?serial(s.cards):s.phase==='data'?parallel(s.data):null;
-const paint = (lp)=>{
-    const el=ensureLine(lp); if(!el)return;
-    const s=st(lp);
-    if((lp.startupLoadingProgress??0)>=100){ el.textContent='Ready now.'; return; }
-    if(lp.useSlowConnectionMode||lp.startupFastTrackRequested||s.phase==='slow'){
-        el.textContent=s.phase==='waiting'?'Slow mode queued. Waiting for startup.':'Slow mode enabled. Opening text-only cards.';
-        return;
-    }
-    if(s.phase==='waiting'){
-        el.textContent='Waiting for startup. Card loading has not started yet.';
-        return;
-    }
-    const m=s.phase==='cards'?s.cards:s.data;
-    const name=s.phase==='cards'?'thumbnail cards':'card data';
-    const t=eta(s);
-    el.textContent=t===null
-        ? `Measuring speed (${count(m,name)}). Estimated time appears after ${MIN_ITEMS} items and ${MIN_MS/1000}s.`
-        : `Estimated time: ${fmt(t)} (${count(m,name)}).`;
-};
-const tick = (lp)=>{ const s=st(lp); if(s.timer!==null)return; s.timer=setInterval(()=>paint(lp),1000); };
-const untick = (lp)=>{ const s=st(lp); if(s.timer===null)return; clearInterval(s.timer); s.timer=null; };
-const patch = async()=>{
-    const [{ LandingPage }, { Card }] = await Promise.all([import('./LandingPage.js'), import('./Card.js')]);
-    if(LandingPage.prototype.__stlpEtaAdaptive)return;
-    Object.defineProperty(LandingPage.prototype,'__stlpEtaAdaptive',{value:true});
-    let loading=null, rendering=null;
-    const oldLoadCard=Card.prototype.load;
-    Card.prototype.load=async function(...args){
-        const lp=loading, m=lp?st(lp).data:null;
-        if(m){m.total++; paint(lp);} const started=performance.now();
-        try{return await oldLoadCard.apply(this,args);} finally{ if(m){m.done++; m.last=performance.now(); m.samples.push(m.last-started); paint(lp);} }
+
+const patchCard = ()=>{
+    if (Card.prototype.__stlpLazyCardPatched) return;
+    Object.defineProperty(Card.prototype, '__stlpLazyCardPatched', { value:true });
+
+    const originalRender = Card.prototype.render;
+    const originalGetLastMembers = Card.prototype.getLastMembers;
+
+    Card.prototype.getLastMembers = function(num) {
+        const source = this.lastMembers?.length ? this.lastMembers : this.members;
+        return (source ?? []).filter(Boolean).slice(0, num);
     };
-    const oldRenderCard=Card.prototype.render;
-    Card.prototype.render=async function(settings,...args){
-        const lp=rendering, s=lp?st(lp):null;
-        const m=s && !lp.useSlowConnectionMode && settings?.loadAvatars!==false ? s.cards : null;
-        if(m){m.total++; paint(lp);} const started=performance.now();
-        try{return await oldRenderCard.apply(this,[settings,...args]);} finally{ if(m){m.done++; m.last=performance.now(); m.samples.push(m.last-started); paint(lp);} }
+
+    Card.prototype.hydrateAvatar = async function(settings = {}) {
+        if (!this.domAvatar || this.domAvatar.dataset.stlpLoaded === 'true' || this.domAvatar.dataset.stlpLoading === 'true') return;
+        this.domAvatar.dataset.stlpLoading = 'true';
+        this.domAvatar.classList.add('stlp--lazyAvatarLoading');
+        const placeholder = this.domAvatar.querySelector('.stlp--avatarPlaceholder');
+        try {
+            const imgs = [];
+            if (settings.showExpression) {
+                const members = this.getLastMembers(settings.numAvatars);
+                await Promise.all(members.map(async(mem)=>{
+                    const memImg = await mem.loadExpression(settings.expression, this.chatMetadata?.triggerCards?.costumes?.[mem.name]);
+                    imgs.push(makeImg(memImg));
+                }));
+            } else {
+                const memImg = await this.loadAvatar();
+                imgs.push(makeImg(memImg));
+            }
+            if (!this.domAvatar?.isConnected) return;
+            imgs.forEach(img=>this.domAvatar.append(img));
+            await waitForFrame();
+            imgs.forEach(img=>img.classList.add('stlp--loaded'));
+            this.domAvatar.dataset.stlpLoaded = 'true';
+            setTimeout(()=>placeholder?.remove(), 450);
+        } catch (err) {
+            console.warn('[STL] lazy avatar failed', this.name, err);
+        } finally {
+            this.domAvatar?.classList.remove('stlp--lazyAvatarLoading');
+            delete this.domAvatar?.dataset.stlpLoading;
+        }
     };
-    const oldLoad=LandingPage.prototype.load;
-    LandingPage.prototype.load=async function(...args){
-        const s=st(this); s.phase=this.startupFastTrackRequested?'slow':'data'; reset(s.data); reset(s.cards); tick(this); paint(this);
-        const prev=loading; loading=this;
-        try{return await oldLoad.apply(this,args);} finally{loading=prev; if(s.phase==='data')s.phase=this.useSlowConnectionMode?'slow':'cards'; paint(this);}
+
+    Card.prototype.render = async function(settings) {
+        if (!settings.lazyLoadAvatars) return originalRender.call(this, settings);
+        const wrap = document.createElement('div');
+        this.dom = wrap;
+        wrap.classList.add('stlp--cardWrap');
+        const item = document.createElement('div');
+        item.classList.add('stlp--card');
+        if (this.isFavorite) item.classList.add('stlp--favorite');
+        item.addEventListener('click', ()=>this.goToChat());
+
+        const name = document.createElement('div');
+        this.domName = name;
+        name.classList.add('stlp--name');
+        name.textContent = this.name;
+        item.append(name);
+
+        const ava = document.createElement('div');
+        this.domAvatar = ava;
+        ava.classList.add('stlp--avatar', 'stlp--lazyAvatar');
+        const placeholder = document.createElement('div');
+        placeholder.classList.add('stlp--avatarPlaceholder', 'stlp--avatarPlaceholderName');
+        placeholder.textContent = this.name || (this.isGroup ? 'Group' : 'Character');
+        placeholder.title = this.name;
+        ava.append(placeholder);
+        item.append(ava);
+        wrap.append(item);
+
+        const message = document.createElement('div');
+        message.classList.add('stlp--mes', 'mes_text');
+        wrap.append(message);
+        return wrap;
     };
-    const oldRenderCards=LandingPage.prototype.renderCardsForCategory;
-    LandingPage.prototype.renderCardsForCategory=async function(root,category,...args){
-        const s=st(this); const cards=category==='search'?this.searchResults.slice(0,this.settings.numCards):(this.cardsByCategory[category]??[]);
-        if(this.useSlowConnectionMode)s.phase='slow'; else{reset(s.cards,cards.length); s.phase='cards';}
-        paint(this); const prev=rendering; rendering=this;
-        try{return await oldRenderCards.apply(this,[root,category,...args]);} finally{rendering=prev; paint(this);}
-    };
-    const oldSlow=LandingPage.prototype.requestStartupFastTrack;
-    LandingPage.prototype.requestStartupFastTrack=function(...args){ const s=st(this); if(s.phase!=='waiting')s.phase='slow'; this.useSlowConnectionMode=true; this.startupFastTrackRequested=true; this.getStartupFastTrackPromise?.(); paint(this); const out=oldSlow.apply(this,args); this.startupFastTrackResolver?.('slow-mode'); this.startupFastTrackResolver=null; paint(this); return out; };
-    const oldStartup=LandingPage.prototype.renderStartupLoading;
-    LandingPage.prototype.renderStartupLoading=function(...args){ const out=oldStartup.apply(this,args); const s=st(this); if(!['data','cards','slow'].includes(s.phase))s.phase='waiting'; tick(this); paint(this); return out; };
-    const oldProgress=LandingPage.prototype.setStartupLoadingProgress;
-    LandingPage.prototype.setStartupLoadingProgress=function(...args){ const out=oldProgress.apply(this,args); paint(this); return out; };
-    const oldTear=LandingPage.prototype.teardownStartupLoading;
-    LandingPage.prototype.teardownStartupLoading=function(...args){ untick(this); return oldTear.apply(this,args); };
-    const oldEnd=LandingPage.prototype.endInput;
-    LandingPage.prototype.endInput=function(...args){ const out=oldEnd.apply(this,args); if(this.sheld)this.sheld.style.zIndex=''; return out; };
-    const oldUn=LandingPage.prototype.unrender;
-    LandingPage.prototype.unrender=function(...args){ const out=oldUn.apply(this,args); untick(this); if(this.sheld){this.sheld.style.zIndex=''; this.sheld.style.opacity=''; this.sheld.style.pointerEvents='';} return out; };
-    if(!document.getElementById('stlp-eta-fix-style')){ const style=document.createElement('style'); style.id='stlp-eta-fix-style'; style.textContent='.stlp--startupLoadingEta{margin-top:.55rem;max-width:min(760px,88vw);font-size:.88em;line-height:1.35;opacity:.78;text-align:center}body:not(:has(.stlp--container)) #sheld{z-index:auto!important}'; document.head.append(style); }
 };
-setTimeout(()=>patch().catch(err=>console.warn('[STL] ETA patch failed', err)),0);
+
+const patchLandingPage = ()=>{
+    if (LandingPage.prototype.__stlpLazyLandingPatched) return;
+    Object.defineProperty(LandingPage.prototype, '__stlpLazyLandingPatched', { value:true });
+
+    LandingPage.prototype.load = async function() {
+        this.setStartupLoadingProgress(12, 'Gathering cards…');
+        this.setStartupLoadingDetail('Building text-first cards. Images will lazy-load as they appear.');
+        const compRecent = (a,b)=>{
+            if (this.settings.showFavorites) {
+                if (a.char.fav && !b.char.fav) return -1;
+                if (!a.char.fav && b.char.fav) return 1;
+            }
+            return (b.char.date_last_chat ?? 0) - (a.char.date_last_chat ?? 0);
+        };
+        if (this.settings.numCards > 0) {
+            const entries = [...characters, ...groups]
+                .filter(it=>!this.settings.onlyFavorites || it.fav)
+                .map(char=>{
+                    const card = new Card(char);
+                    card.onOpenChat = ()=>this.dom.classList.add('stlp--busy');
+                    return { char, card };
+                });
+            const byRecent = entries.toSorted(compRecent);
+            const byFavorites = byRecent.filter(it=>it.card.isFavorite);
+            this.cardEntries = new Map(entries.map(it=>[it.card, it]));
+            this.cardsByCategory = {
+                favorites: byFavorites.map(it=>it.card).slice(0, this.settings.numCards),
+                recents: byRecent.map(it=>it.card).slice(0, this.settings.numCards),
+                search: byRecent.map(it=>it.card),
+            };
+            this.availableTags = this.getAvailableTags(this.cardsByCategory.search);
+            this.updateSearchResults();
+            this.cards = this.activeCategory === 'search'
+                ? this.searchResults.slice(0, this.settings.numCards)
+                : (this.cardsByCategory[this.activeCategory] ?? []);
+            this.setStartupLoadingProgress(82, 'Dealing your hand…');
+            this.setStartupLoadingDetail('Cards are ready. Loading images only when they are seen.');
+        } else {
+            this.cards = [];
+            this.cardEntries = new Map();
+            this.searchResults = [];
+            this.availableTags = [];
+            this.cardsByCategory = { favorites:[], recents:[], search:[] };
+        }
+    };
+
+    LandingPage.prototype.resetLazyAvatarLoader = function() {
+        this.lazyAvatarObserver?.disconnect();
+        this.lazyAvatarObserver = null;
+        this.lazyAvatarQueue = [];
+        this.lazyAvatarLoading = false;
+    };
+
+    LandingPage.prototype.enqueueLazyAvatar = function(card, index) {
+        if (!card?.dom?.isConnected || card.domAvatar?.dataset.stlpLoaded === 'true') return;
+        if (this.lazyAvatarQueue?.some(item=>item.card === card)) return;
+        this.lazyAvatarQueue ??= [];
+        this.lazyAvatarQueue.push({ card, index, seenAt:performance.now() });
+        this.processLazyAvatarQueue();
+    };
+
+    LandingPage.prototype.processLazyAvatarQueue = async function() {
+        if (this.lazyAvatarLoading) return;
+        this.lazyAvatarLoading = true;
+        this.lazyAvatarQueue ??= [];
+        while (this.lazyAvatarQueue.length) {
+            this.lazyAvatarQueue.sort((a,b)=>a.seenAt - b.seenAt || a.index - b.index);
+            const { card } = this.lazyAvatarQueue.shift();
+            if (!card.dom?.isConnected || card.domAvatar?.dataset.stlpLoaded === 'true') continue;
+            await card.hydrateAvatar(realSettings(this));
+            await waitForFrame();
+        }
+        this.lazyAvatarLoading = false;
+    };
+
+    LandingPage.prototype.observeLazyAvatar = function(root, card, index) {
+        if (!this.lazyAvatarObserver && 'IntersectionObserver' in window) {
+            this.lazyAvatarObserver = new IntersectionObserver(entries=>{
+                entries
+                    .filter(entry=>entry.isIntersecting)
+                    .sort((a,b)=>Number(a.target.dataset.stlpIndex ?? 0) - Number(b.target.dataset.stlpIndex ?? 0))
+                    .forEach(entry=>{
+                        this.lazyAvatarObserver?.unobserve(entry.target);
+                        this.enqueueLazyAvatar(entry.target.__stlpCard, Number(entry.target.dataset.stlpIndex ?? 0));
+                    });
+            }, { root, rootMargin:'500px 300px', threshold:0.01 });
+        }
+        card.dom.dataset.stlpIndex = String(index);
+        card.dom.__stlpCard = card;
+        if (this.lazyAvatarObserver) {
+            this.lazyAvatarObserver.observe(card.dom);
+        } else {
+            this.enqueueLazyAvatar(card, index);
+        }
+    };
+
+    LandingPage.prototype.renderCardsForCategory = async function(root, category) {
+        this.resetLazyAvatarLoader();
+        root.setAttribute('data-category', category);
+        root.innerHTML = '';
+        this.cards = category === 'search'
+            ? this.searchResults.slice(0, this.settings.numCards)
+            : (this.cardsByCategory[category] ?? []);
+        const els = [];
+        for (let i = 0; i < this.cards.length; i++) {
+            const card = this.cards[i];
+            const el = await card.render(seenSettings(this));
+            els.push(el);
+        }
+        els.forEach((el, index)=>{
+            root.append(el);
+            this.observeLazyAvatar(root, this.cards[index], index);
+        });
+    };
+
+    const originalRenderStartupLoading = LandingPage.prototype.renderStartupLoading;
+    LandingPage.prototype.renderStartupLoading = function(...args) {
+        const out = originalRenderStartupLoading.apply(this, args);
+        this.startupSlowModeButtonEl?.remove();
+        this.startupSlowModeButtonEl = null;
+        this.setStartupLoadingDetail('Preparing text-first cards. Images lazy-load after the page opens.');
+        return out;
+    };
+
+    const originalUnrender = LandingPage.prototype.unrender;
+    LandingPage.prototype.unrender = function(...args) {
+        this.resetLazyAvatarLoader?.();
+        const out = originalUnrender.apply(this, args);
+        if (this.sheld) {
+            this.sheld.style.zIndex = '';
+            this.sheld.style.opacity = '';
+            this.sheld.style.pointerEvents = '';
+        }
+        return out;
+    };
+
+    const originalEndInput = LandingPage.prototype.endInput;
+    LandingPage.prototype.endInput = function(...args) {
+        const out = originalEndInput.apply(this, args);
+        if (this.sheld) this.sheld.style.zIndex = '';
+        return out;
+    };
+};
+
+installStyles();
+patchCard();
+patchLandingPage();
