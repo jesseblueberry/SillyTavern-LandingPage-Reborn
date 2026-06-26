@@ -9,6 +9,7 @@ import { Card } from './Card.js';
 import { waitForFrame } from './wait.js';
 
 const LAZY_AVATAR_CONCURRENCY = 3;
+const HIGH_RES_AVATAR_CONCURRENCY = 1;
 
 export class LandingPage {
     /**@type {Card[]}*/ cards = [];
@@ -58,6 +59,9 @@ export class LandingPage {
     /**@type {Array<{card:Card,index:number,seenAt:number}>}*/ lazyAvatarQueue = [];
     /**@type {number}*/ lazyAvatarLoadingCount = 0;
     /**@type {AbortController|null}*/ lazyAvatarAbortController = null;
+    /**@type {Array<{card:Card,index:number,seenAt:number}>}*/ highResAvatarQueue = [];
+    /**@type {number}*/ highResAvatarLoadingCount = 0;
+    /**@type {AbortController|null}*/ highResAvatarAbortController = null;
     /**@type {number}*/ lazyAvatarRunId = 0;
     /**@type {AbortController|null}*/ backgroundAbortController = null;
     /**@type {AbortController|null}*/ backgroundPreloadAbortController = null;
@@ -610,6 +614,10 @@ export class LandingPage {
         this.lazyAvatarLoadingCount = 0;
         this.lazyAvatarAbortController?.abort();
         this.lazyAvatarAbortController = null;
+        this.highResAvatarQueue = [];
+        this.highResAvatarLoadingCount = 0;
+        this.highResAvatarAbortController?.abort();
+        this.highResAvatarAbortController = null;
     }
 
     enqueueLazyAvatar(card, index) {
@@ -635,6 +643,7 @@ export class LandingPage {
                 card.dom.setAttribute('aria-busy', 'true');
                 this.setStartupLoadingDetail(`Loading card art ${index + 1}/${this.cards.length}: ${card.name}`);
                 await card.hydrateAvatar(this.settings, { signal });
+                this.enqueueHighResAvatar(card, index);
                 card.dom?.removeAttribute('aria-busy');
                 this.setStartupLoadingDetail(`Loaded card art ${index + 1}/${this.cards.length}: ${card.name}`);
                 await waitForFrame();
@@ -644,6 +653,41 @@ export class LandingPage {
                 this.lazyAvatarLoadingCount = Math.max(0, this.lazyAvatarLoadingCount - 1);
                 if (this.lazyAvatarLoadingCount === 0 && !this.lazyAvatarQueue.length) {
                     this.lazyAvatarAbortController = null;
+                    this.processHighResAvatarQueue();
+                }
+            }
+        }
+    }
+
+    enqueueHighResAvatar(card, index) {
+        if (!card?.dom?.isConnected || !card.isAvatarLoaded || card.isAvatarUpgraded || !card.getAvatarUpgradeSource()) return;
+        if (this.highResAvatarQueue.some(item=>item.card === card)) return;
+        this.highResAvatarQueue.push({ card, index, seenAt:performance.now() });
+        this.processHighResAvatarQueue();
+    }
+
+    async processHighResAvatarQueue() {
+        if (this.lazyAvatarLoadingCount > 0 || this.lazyAvatarQueue.length) return;
+        if (this.highResAvatarLoadingCount >= HIGH_RES_AVATAR_CONCURRENCY) return;
+        if (!this.highResAvatarAbortController) {
+            this.highResAvatarAbortController = new AbortController();
+        }
+        const signal = this.highResAvatarAbortController.signal;
+        const runId = this.lazyAvatarRunId;
+        this.highResAvatarLoadingCount++;
+        try {
+            while (runId === this.lazyAvatarRunId && !this.lazyAvatarQueue.length && this.highResAvatarQueue.length) {
+                this.highResAvatarQueue.sort((a,b)=>a.seenAt - b.seenAt || a.index - b.index);
+                const { card } = this.highResAvatarQueue.shift();
+                if (!card.dom?.isConnected || !card.isAvatarLoaded || card.isAvatarUpgraded) continue;
+                await card.upgradeAvatarQuality({ signal });
+                await waitForFrame();
+            }
+        } finally {
+            if (runId === this.lazyAvatarRunId) {
+                this.highResAvatarLoadingCount = Math.max(0, this.highResAvatarLoadingCount - 1);
+                if (this.highResAvatarLoadingCount === 0 && !this.highResAvatarQueue.length) {
+                    this.highResAvatarAbortController = null;
                 }
             }
         }

@@ -11,13 +11,16 @@ const makeAvatarImage = (src)=>{
     return img;
 };
 
-const fitAvatarImage = (img)=>{
-    const naturalHeight = img.naturalHeight || 144;
-    const naturalWidth = img.naturalWidth || 96;
+const fitAvatarImage = (img, naturalSource = img)=>{
+    const naturalHeight = naturalSource.naturalHeight || 144;
+    const naturalWidth = naturalSource.naturalWidth || 96;
     img.style.width = `calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth})`;
     img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth})`;
     img.style.marginRight = `calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth} / -2)`;
 };
+
+const makeAvatarThumbnailUrl = (avatar)=>`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`;
+const makeAvatarOriginalUrl = (avatar)=>`/characters/${avatar}`;
 
 const loadDomImage = async(img, sources, { signal = null } = {})=>{
     return new Promise(resolve=>{
@@ -55,6 +58,37 @@ const loadDomImage = async(img, sources, { signal = null } = {})=>{
     });
 };
 
+const preloadImage = async(src, { signal = null } = {})=>{
+    return new Promise(resolve=>{
+        const img = new Image();
+        const cleanup = ()=>{
+            img.removeEventListener('load', handleLoad);
+            img.removeEventListener('error', handleError);
+            signal?.removeEventListener('abort', handleAbort);
+        };
+        const handleLoad = ()=>{
+            cleanup();
+            resolve(img);
+        };
+        const handleError = ()=>{
+            cleanup();
+            resolve(null);
+        };
+        const handleAbort = ()=>{
+            cleanup();
+            resolve(null);
+        };
+        img.addEventListener('load', handleLoad);
+        img.addEventListener('error', handleError);
+        signal?.addEventListener('abort', handleAbort, { once:true });
+        if (signal?.aborted) {
+            handleAbort();
+            return;
+        }
+        img.src = src;
+    });
+};
+
 export class Card {
     /**@type {String}*/ name;
     /**@type {Member[]}*/ members;
@@ -71,11 +105,11 @@ export class Card {
     /**@type {Member[]}*/ lastMembers;
     /**@type {Object}*/ lastMessage;
     /**@type {Object}*/ chatMetadata;
-    /**@type {HTMLImageElement}*/ avatarImg;
-
     /**@type {Boolean}*/ isLoaded = false;
     /**@type {Boolean}*/ isAvatarLoaded = false;
     /**@type {Boolean}*/ isAvatarLoading = false;
+    /**@type {Boolean}*/ isAvatarUpgraded = false;
+    /**@type {Boolean}*/ isAvatarUpgrading = false;
     /**@type {Array<{src:string,width:string,flex:string,marginRight:string}>}*/ avatarImageData = [];
 
     /**@type {HTMLElement}*/ dom;
@@ -167,16 +201,6 @@ export class Card {
         return this;
     }
 
-    async loadAvatar() {
-        return new Promise((resolve, reject)=>{
-            const img = new Image();
-            this.avatarImg = img;
-            img.addEventListener('load', ()=>resolve(img));
-            img.addEventListener('error', ()=>reject());
-            img.src = this.isGroup ? this.avatar : `/characters/${this.avatar}`;
-        });
-    }
-
     updateLastMembers(mesList) {
         if (this.isGroup) {
             const chars = mesList
@@ -211,7 +235,18 @@ export class Card {
     getCardSources() {
         if (this.isGroup) return [this.avatar];
         const member = this.members.find(Boolean);
-        return member ? [`/characters/${member.avatar}`] : [`/characters/${this.avatar}`];
+        const avatar = member?.avatar ?? this.avatar;
+        return [
+            makeAvatarThumbnailUrl(avatar),
+            makeAvatarOriginalUrl(avatar),
+        ];
+    }
+
+    getAvatarUpgradeSource() {
+        if (this.isGroup) return null;
+        const member = this.members.find(Boolean);
+        const avatar = member?.avatar ?? this.avatar;
+        return makeAvatarOriginalUrl(avatar);
     }
 
     restoreHydratedAvatar() {
@@ -270,6 +305,38 @@ export class Card {
             this.isAvatarLoading = false;
             this.domAvatar?.classList.remove('stlp--lazyAvatarLoading');
             delete this.domAvatar?.dataset.stlpLoading;
+        }
+    }
+
+    async upgradeAvatarQuality({ signal = null } = {}) {
+        if (!this.domAvatar || !this.isAvatarLoaded || this.isAvatarUpgraded || this.isAvatarUpgrading) return;
+        const src = this.getAvatarUpgradeSource();
+        if (!src) return;
+        const currentImg = this.domAvatar.querySelector('.stlp--lazyAvatarImg.stlp--loaded');
+        if (!currentImg || currentImg.getAttribute('src') === src) {
+            this.isAvatarUpgraded = true;
+            return;
+        }
+        this.isAvatarUpgrading = true;
+        try {
+            const fullImage = await preloadImage(src, { signal });
+            if (!fullImage || signal?.aborted || !this.domAvatar?.isConnected) return;
+            fitAvatarImage(currentImg, fullImage);
+            currentImg.src = src;
+            currentImg.classList.add('stlp--avatarImgUpgraded');
+            this.avatarImageData = [{
+                src,
+                width: currentImg.style.width,
+                flex: currentImg.style.flex,
+                marginRight: currentImg.style.marginRight,
+            }];
+            this.isAvatarUpgraded = true;
+        } catch (err) {
+            if (!signal?.aborted) {
+                console.warn('[STL] avatar quality upgrade failed', this.name, err);
+            }
+        } finally {
+            this.isAvatarUpgrading = false;
         }
     }
 
