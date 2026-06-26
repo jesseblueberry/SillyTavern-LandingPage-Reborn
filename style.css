@@ -653,9 +653,6 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar.stlp--lazyAvatarLoading > .stlp--avatarProgress {
   opacity: 1;
 }
-.stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar.stlp--lazyAvatarFailed > .stlp--avatarProgress {
-  background: radial-gradient(circle, rgba(8 13 28 / 0.9) 0 43%, transparent 45%), conic-gradient(#ff8484 100%, rgba(255 255 255 / 0.18) 0);
-}
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar > .stlp--avatarImg:last-child {
   margin-right: 0 !important;
 }

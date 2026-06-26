@@ -52,6 +52,7 @@ export class LandingPage {
     /**@type {HTMLElement}*/ startupLoadingBarEl;
     /**@type {number}*/ startupLoadingProgress = 0;
     /**@type {number|null}*/ startupLoadingTimer = null;
+    /**@type {number}*/ startupLoadingStartedAt = 0;
     /**@type {IntersectionObserver|null}*/ lazyAvatarObserver = null;
     /**@type {Array<{card:Card,index:number,seenAt:number}>}*/ lazyAvatarQueue = [];
     /**@type {boolean}*/ lazyAvatarLoading = false;
@@ -629,6 +630,7 @@ export class LandingPage {
                 const { card, index } = this.lazyAvatarQueue.shift();
                 if (!card.dom?.isConnected || card.isAvatarLoaded) continue;
                 card.dom.setAttribute('aria-busy', 'true');
+                this.setStartupLoadingDetail(`Loading card art ${index + 1}/${this.cards.length}: ${card.name}`);
                 await card.hydrateAvatar(this.settings, {
                     signal,
                     onProgress: progress=>{
@@ -935,6 +937,12 @@ export class LandingPage {
                 inputDisplayContainer.append(inputDisplay);
             }
         }
+        this.setStartupLoadingProgress(96, 'Ready!');
+        if (this.startupLoadingStartedAt) {
+            const elapsed = Date.now() - this.startupLoadingStartedAt;
+            const remaining = Math.max(0, 850 - elapsed);
+            if (remaining) await delay(remaining);
+        }
         this.setStartupLoadingProgress(100, 'Ready!');
         this.teardownStartupLoading(true);
     }
@@ -977,9 +985,15 @@ export class LandingPage {
             }
             this.dom.append(loading);
         }
+        this.startupLoadingStartedAt = Date.now();
         this.startupLoadingProgress = 5;
         this.setStartupLoadingProgress(5, 'Starting landing page…');
         this.setStartupLoadingDetail('Waiting for SillyTavern to finish initializing…');
+        if (this.startupLoadingTimer !== null) clearInterval(this.startupLoadingTimer);
+        this.startupLoadingTimer = setInterval(()=>{
+            if (this.startupLoadingProgress >= 45) return;
+            this.setStartupLoadingProgress(this.startupLoadingProgress + 1);
+        }, 170);
     }
     setStartupLoadingProgress(value, label = null) {
         this.startupLoadingProgress = Math.max(0, Math.min(100, value));

@@ -4,16 +4,64 @@ import { applyTagsOnCharacterSelect } from '../../../../tags.js';
 import { Member } from './Member.js';
 import { waitForFrame } from './wait.js';
 
-const AVATAR_TIMEOUT_MS = 4500;
-
-const makeAvatarImage = (memImg)=>{
+const makeAvatarImage = (src)=>{
     const img = document.createElement('img');
     img.classList.add('stlp--avatarImg', 'stlp--lazyAvatarImg');
-    img.style.width = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-    img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth})`;
-    img.style.marginRight = `calc(var(--stlp--cardHeight) / ${memImg.naturalHeight} * ${memImg.naturalWidth} / -2)`;
-    img.src = memImg.src;
+    if (src) img.src = src;
     return img;
+};
+
+const fitAvatarImage = (img)=>{
+    const naturalHeight = img.naturalHeight || 144;
+    const naturalWidth = img.naturalWidth || 96;
+    img.style.width = `calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth})`;
+    img.style.flex = `0 0 calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth})`;
+    img.style.marginRight = `calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth} / -2)`;
+};
+
+const loadDomImage = async(img, sources, { signal = null, onProgress = null } = {})=>{
+    return new Promise(resolve=>{
+        let sourceIndex = 0;
+        let progress = 8;
+        const cleanup = ()=>{
+            clearInterval(timer);
+            img.removeEventListener('load', handleLoad);
+            img.removeEventListener('error', handleError);
+            signal?.removeEventListener('abort', handleAbort);
+        };
+        const trySource = ()=>{
+            if (signal?.aborted || sourceIndex >= sources.length) {
+                cleanup();
+                resolve(false);
+                return;
+            }
+            progress = Math.max(progress, sourceIndex === 0 ? 8 : 45);
+            onProgress?.(progress);
+            img.src = sources[sourceIndex];
+        };
+        const handleLoad = ()=>{
+            cleanup();
+            fitAvatarImage(img);
+            onProgress?.(100);
+            resolve(true);
+        };
+        const handleError = ()=>{
+            sourceIndex++;
+            trySource();
+        };
+        const handleAbort = ()=>{
+            cleanup();
+            resolve(false);
+        };
+        const timer = setInterval(()=>{
+            progress = Math.min(92, progress + 3);
+            onProgress?.(progress);
+        }, 180);
+        img.addEventListener('load', handleLoad);
+        img.addEventListener('error', handleError);
+        signal?.addEventListener('abort', handleAbort, { once:true });
+        trySource();
+    });
 };
 
 export class Card {
@@ -138,35 +186,6 @@ export class Card {
         });
     }
 
-    async loadAvatarWithTimeout(options = {}) {
-        return new Promise((resolve, reject)=>{
-            const img = new Image();
-            const signal = options.signal ?? null;
-            const timeoutMs = options.timeoutMs ?? AVATAR_TIMEOUT_MS;
-            const cleanup = ()=>{
-                clearTimeout(timeout);
-                signal?.removeEventListener('abort', abort);
-            };
-            const abort = ()=>{
-                cleanup();
-                img.src = '';
-                reject(new DOMException('Image load aborted', 'AbortError'));
-            };
-            const timeout = setTimeout(abort, timeoutMs);
-            signal?.addEventListener('abort', abort, { once:true });
-            if (signal?.aborted) return abort();
-            img.addEventListener('load', ()=>{
-                cleanup();
-                resolve(img);
-            }, { once:true });
-            img.addEventListener('error', ()=>{
-                cleanup();
-                reject(new Error(`Could not load avatar: ${this.avatar}`));
-            }, { once:true });
-            img.src = this.isGroup ? this.avatar : `/characters/${this.avatar}`;
-        });
-    }
-
     updateLastMembers(mesList) {
         if (this.isGroup) {
             const chars = mesList
@@ -203,6 +222,20 @@ export class Card {
         this.domAvatar.style.setProperty('--stlp--avatarLoadProgress', `${Math.max(0, Math.min(100, value))}%`);
     }
 
+    getMemberSources(mem, settings) {
+        const avatarUrl = `/characters/${mem.avatar}`;
+        if (!settings.showExpression) return [avatarUrl];
+        const costume = this.chatMetadata?.triggerCards?.costumes?.[mem.name] ?? mem.name;
+        const expressionUrls = (settings.extensions ?? ['png']).map(ext=>`/characters/${costume}/${settings.expression}.${ext}`);
+        return [...expressionUrls, avatarUrl];
+    }
+
+    getCardSources(settings) {
+        if (this.isGroup) return [this.avatar];
+        const member = this.members.find(Boolean);
+        return member ? this.getMemberSources(member, settings) : [`/characters/${this.avatar}`];
+    }
+
     restoreHydratedAvatar() {
         if (!this.domAvatar || !this.avatarImageData.length) return;
         this.domAvatar.dataset.stlpLoaded = 'true';
@@ -230,41 +263,53 @@ export class Card {
         const placeholder = this.domAvatar.querySelector('.stlp--avatarPlaceholder');
         const imgs = [];
         try {
-            if (settings.showExpression) {
+            if (this.isGroup && settings.showExpression) {
                 const members = this.getLastMembers(settings.numAvatars);
                 const total = Math.max(members.length, 1);
                 for (let i = 0; i < members.length; i++) {
                     if (signal?.aborted) return;
                     const mem = members[i];
-                    try {
-                        const memImg = await mem.loadExpression(settings.expression, this.chatMetadata?.triggerCards?.costumes?.[mem.name], {
-                            signal,
-                            timeoutMs: AVATAR_TIMEOUT_MS,
-                        });
-                        imgs.push(makeAvatarImage(memImg));
-                    } catch {
-                        if (signal?.aborted) return;
-                        const fallbackImg = await mem.loadAvatar({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
-                        imgs.push(makeAvatarImage(fallbackImg));
+                    const img = makeAvatarImage('');
+                    this.domAvatar.append(img);
+                    imgs.push(img);
+                    const loaded = await loadDomImage(img, this.getMemberSources(mem, settings), {
+                        signal,
+                        onProgress: progress=>{
+                            const cardProgress = Math.round(((i + (progress / 100)) / total) * 90);
+                            this.setAvatarProgress(cardProgress);
+                            onProgress?.(cardProgress);
+                        },
+                    });
+                    if (loaded) {
+                        img.classList.add('stlp--loaded');
+                    } else {
+                        img.remove();
+                        imgs.splice(imgs.indexOf(img), 1);
                     }
-                    const progress = 10 + Math.round(((i + 1) / total) * 75);
+                    const progress = Math.round(((i + 1) / total) * 90);
                     this.setAvatarProgress(progress);
                     onProgress?.(progress);
                 }
             } else {
-                const memImg = await this.loadAvatarWithTimeout({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
-                imgs.push(makeAvatarImage(memImg));
-                this.setAvatarProgress(85);
-                onProgress?.(85);
+                const img = makeAvatarImage('');
+                this.domAvatar.append(img);
+                imgs.push(img);
+                const loaded = await loadDomImage(img, this.getCardSources(settings), {
+                    signal,
+                    onProgress: progress=>{
+                        this.setAvatarProgress(progress);
+                        onProgress?.(progress);
+                    },
+                });
+                if (loaded) {
+                    img.classList.add('stlp--loaded');
+                } else {
+                    img.remove();
+                    imgs.splice(imgs.indexOf(img), 1);
+                }
             }
 
-            if (!imgs.length) {
-                const memImg = await this.loadAvatarWithTimeout({ signal, timeoutMs:AVATAR_TIMEOUT_MS });
-                imgs.push(makeAvatarImage(memImg));
-            }
-
-            if (!this.domAvatar?.isConnected || signal?.aborted) return;
-            imgs.forEach(img=>this.domAvatar.append(img));
+            if (!imgs.length || !this.domAvatar?.isConnected || signal?.aborted) return;
             await waitForFrame();
             imgs.forEach(img=>img.classList.add('stlp--loaded'));
             this.avatarImageData = imgs.map(img=>({
@@ -281,7 +326,6 @@ export class Card {
         } catch (err) {
             if (!signal?.aborted) {
                 console.warn('[STL] lazy avatar failed', this.name, err);
-                this.domAvatar?.classList.add('stlp--lazyAvatarFailed');
             }
         } finally {
             this.isAvatarLoading = false;
