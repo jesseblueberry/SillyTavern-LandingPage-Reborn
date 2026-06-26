@@ -1,301 +1,190 @@
-const formatDuration = (seconds)=>{
-    if (!Number.isFinite(seconds) || seconds < 0) return 'measuring…';
-    seconds = Math.max(1, Math.ceil(seconds));
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    const rest = seconds % 60;
-    if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return mins ? `${hours}h ${mins}m` : `${hours}h`;
+const MIN_ITEMS = 5;
+const MIN_MS = 2000;
+
+const fmt = (sec)=>{
+    sec = Math.max(1, Math.ceil(sec));
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    const rest = sec % 60;
+    return rest ? `${min}m ${rest}s` : `${min}m`;
 };
 
-const makeMetric = ()=>({
-    startedAt: performance.now(),
-    total: 0,
-    started: 0,
-    finished: 0,
-    samples: [],
-});
-
-const resetMetric = (metric, total = 0)=>{
-    metric.startedAt = performance.now();
-    metric.total = total;
-    metric.started = 0;
-    metric.finished = 0;
-    metric.samples = [];
+const metric = ()=>({ start:performance.now(), total:0, done:0, samples:[] });
+const reset = (m, total = 0)=>{ m.start = performance.now(); m.total = total; m.done = 0; m.samples = []; };
+const enough = (m)=>m.done >= MIN_ITEMS && performance.now() - m.start >= MIN_MS;
+const count = (m, label)=>`${label} ${Math.min(m.done, m.total || m.done)}/${m.total || m.done || '?'}`;
+const serialEta = (m)=>{
+    const total = m.total || m.done;
+    const left = total - m.done;
+    if (left <= 0) return 0;
+    if (!enough(m)) return null;
+    return (m.samples.reduce((a,b)=>a+b, 0) / m.samples.length) * left / 1000;
+};
+const parallelEta = (m)=>{
+    const total = m.total || m.done;
+    const left = total - m.done;
+    if (left <= 0) return 0;
+    if (!enough(m)) return null;
+    return ((performance.now() - m.start) / 1000 / m.done) * left;
 };
 
-const estimateParallel = (metric)=>{
-    const total = metric.total || metric.started;
-    const remaining = Math.max(0, total - metric.finished);
-    if (!total || !remaining) return 0;
-    if (!metric.finished) return null;
-    const elapsed = (performance.now() - metric.startedAt) / 1000;
-    return elapsed / metric.finished * remaining;
+const state = (lp)=>lp.__stlpEta ??= {
+    phase:'waiting',
+    data:metric(),
+    cards:metric(),
+    slow:metric(),
+    lastNormalEta:null,
+    hadNormalEta:false,
 };
 
-const estimateSerial = (metric)=>{
-    const total = metric.total || metric.started;
-    const remaining = Math.max(0, total - metric.finished);
-    if (!total || !remaining) return 0;
-    if (!metric.samples.length) return null;
-    const avgMs = metric.samples.reduce((sum, val)=>sum + val, 0) / metric.samples.length;
-    return avgMs * remaining / 1000;
+const line = (lp)=>{
+    if (!lp?.startupLoadingEl) return null;
+    if (lp.__stlpEtaLine?.isConnected) return lp.__stlpEtaLine;
+    const el = document.createElement('div');
+    el.className = 'stlp--startupLoadingEta';
+    el.textContent = 'Waiting for SillyTavern startup. Card loading has not started yet.';
+    lp.__stlpEtaLine = el;
+    lp.startupLoadingEl.querySelector('.stlp--startupLoadingProgress')?.insertAdjacentElement('afterend', el);
+    return el;
 };
 
-const ensureMetrics = (landingPage)=>{
-    if (!landingPage.__stlpMeasuredEta) {
-        landingPage.__stlpMeasuredEta = {
-            phase: 'starting',
-            normalData: makeMetric(),
-            normalCards: makeMetric(),
-            slowCards: makeMetric(),
-            lastNormalEta: null,
-            lastSlowEta: null,
-        };
-    }
-    return landingPage.__stlpMeasuredEta;
-};
+const normalEta = (s)=>s.phase === 'cards' ? serialEta(s.cards) : s.phase === 'data' ? parallelEta(s.data) : null;
 
-const metricLabel = (metric, label)=>{
-    const total = metric.total || metric.started;
-    if (!total) return label;
-    return `${label} ${Math.min(metric.finished, total)}/${total}`;
-};
-
-const normalEta = (metrics)=>{
-    if (metrics.phase === 'data') return estimateParallel(metrics.normalData);
-    if (metrics.phase === 'cards') return estimateSerial(metrics.normalCards);
-    return estimateParallel(metrics.normalData) ?? estimateSerial(metrics.normalCards);
-};
-
-const slowEta = (metrics)=>{
-    if (metrics.phase !== 'slow-cards') return null;
-    return estimateSerial(metrics.slowCards);
-};
-
-const ensureEtaLine = (landingPage)=>{
-    if (!landingPage?.startupLoadingEl) return;
-    if (landingPage.startupEtaEl?.isConnected) return;
-    const line = document.createElement('div');
-    line.classList.add('stlp--startupLoadingEta');
-    line.textContent = 'Measuring startup…';
-    landingPage.startupEtaEl = line;
-    const progress = landingPage.startupLoadingEl.querySelector('.stlp--startupLoadingProgress');
-    progress?.insertAdjacentElement('afterend', line);
-};
-
-const updateEtaLine = (landingPage)=>{
-    ensureEtaLine(landingPage);
-    const line = landingPage?.startupEtaEl;
-    if (!line) return;
-    const metrics = ensureMetrics(landingPage);
-
-    if (Number(landingPage.startupLoadingProgress ?? 0) >= 100) {
-        line.textContent = 'Ready now.';
+const paint = (lp)=>{
+    const el = line(lp);
+    if (!el) return;
+    const s = state(lp);
+    if ((lp.startupLoadingProgress ?? 0) >= 100) { el.textContent = 'Ready now.'; return; }
+    if (s.phase === 'waiting') {
+        el.textContent = lp.startupFastTrackRequested
+            ? 'Slow mode queued. Waiting for SillyTavern startup before opening text-only cards.'
+            : 'Waiting for SillyTavern startup. Card loading has not started yet.';
         return;
     }
-
-    const nEta = normalEta(metrics);
-    const sEta = slowEta(metrics);
-    if (nEta !== null) metrics.lastNormalEta = nEta;
-    if (sEta !== null) metrics.lastSlowEta = sEta;
-
-    if (landingPage.useSlowConnectionMode || landingPage.startupFastTrackRequested) {
-        const slowText = sEta === null
-            ? 'Slow mode remaining: measuring text-card render…'
-            : `Slow mode remaining: ${formatDuration(sEta)} (${metricLabel(metrics.slowCards, 'text cards')}).`;
-        const normalText = metrics.lastNormalEta === null
-            ? 'Normal mode remaining before switch: still measuring.'
-            : `Normal mode would have had about ${formatDuration(metrics.lastNormalEta)} left.`;
-        line.textContent = `${slowText} ${normalText}`;
+    if (lp.useSlowConnectionMode || lp.startupFastTrackRequested || s.phase === 'slow') {
+        const eta = serialEta(s.slow);
+        const slowText = eta === null
+            ? `Slow mode: measuring real text-card speed (${count(s.slow, 'text cards')}). ETA appears after ${MIN_ITEMS} cards and ${MIN_MS / 1000}s.`
+            : `Slow mode remaining: ${fmt(eta)} (${count(s.slow, 'text cards')}).`;
+        const normalText = s.hadNormalEta && s.lastNormalEta !== null
+            ? `Normal mode had about ${fmt(s.lastNormalEta)} left when interrupted.`
+            : 'Normal mode was interrupted before enough data was measured.';
+        el.textContent = `${slowText} ${normalText}`;
         return;
     }
-
-    const phaseMetric = metrics.phase === 'data' ? metrics.normalData : metrics.normalCards;
-    const phaseLabel = metrics.phase === 'data' ? 'card data' : 'thumbnail cards';
-    const normalText = nEta === null
-        ? `Normal remaining: measuring ${metricLabel(phaseMetric, phaseLabel)}…`
-        : `Normal remaining: ${formatDuration(nEta)} (${metricLabel(phaseMetric, phaseLabel)}).`;
-    const slowText = metrics.lastSlowEta === null
-        ? 'Slow mode if clicked: timing starts after click.'
-        : `Slow mode if clicked: about ${formatDuration(metrics.lastSlowEta)} from measured text-card speed.`;
-    line.textContent = `${normalText} ${slowText}`;
+    const eta = normalEta(s);
+    const m = s.phase === 'cards' ? s.cards : s.data;
+    const label = s.phase === 'cards' ? 'thumbnail cards' : 'card data';
+    if (eta === null) {
+        el.textContent = `Normal mode: measuring real speed (${count(m, label)}). ETA appears after ${MIN_ITEMS} items and ${MIN_MS / 1000}s. Slow mode timing starts after click.`;
+    } else {
+        s.hadNormalEta = true;
+        s.lastNormalEta = eta;
+        el.textContent = `Normal remaining: ${fmt(eta)} (${count(m, label)}). Slow mode timing starts after click.`;
+    }
 };
 
-const patchLandingPageRuntime = async()=>{
-    const [{ LandingPage }, { Card }] = await Promise.all([
-        import('./LandingPage.js'),
-        import('./Card.js'),
-    ]);
-    const proto = LandingPage?.prototype;
-    const cardProto = Card?.prototype;
-    if (!proto || !cardProto || proto.__stlpMeasuredEtaPatched) return;
-    Object.defineProperty(proto, '__stlpMeasuredEtaPatched', { value:true });
+const patch = async()=>{
+    const [{ LandingPage }, { Card }] = await Promise.all([import('./LandingPage.js'), import('./Card.js')]);
+    if (LandingPage.prototype.__stlpEtaFixed) return;
+    Object.defineProperty(LandingPage.prototype, '__stlpEtaFixed', { value:true });
 
-    let activeDataPage = null;
-    let activeRenderPage = null;
+    let loadingPage = null;
+    let renderingPage = null;
 
-    const originalCardLoad = cardProto.load;
-    cardProto.load = async function(...args) {
-        const page = activeDataPage;
-        const metric = page ? ensureMetrics(page).normalData : null;
-        if (metric) {
-            metric.started += 1;
-            metric.total = Math.max(metric.total, metric.started);
-            updateEtaLine(page);
-        }
-        const startedAt = performance.now();
-        try {
-            return await originalCardLoad.apply(this, args);
-        } finally {
-            if (metric) {
-                metric.finished += 1;
-                metric.samples.push(performance.now() - startedAt);
-                updateEtaLine(page);
-            }
-        }
+    const oldCardLoad = Card.prototype.load;
+    Card.prototype.load = async function(...args) {
+        const lp = loadingPage;
+        const m = lp ? state(lp).data : null;
+        if (m) { m.total += 1; paint(lp); }
+        const started = performance.now();
+        try { return await oldCardLoad.apply(this, args); }
+        finally { if (m) { m.done += 1; m.samples.push(performance.now() - started); paint(lp); } }
     };
 
-    const originalCardRender = cardProto.render;
-    cardProto.render = async function(settings, ...args) {
-        const page = activeRenderPage;
-        const metrics = page ? ensureMetrics(page) : null;
-        const metric = metrics ? ((settings?.loadAvatars === false || page.useSlowConnectionMode) ? metrics.slowCards : metrics.normalCards) : null;
-        if (metric) {
-            metric.started += 1;
-            metric.total = Math.max(metric.total, metric.started);
-            updateEtaLine(page);
-        }
-        const startedAt = performance.now();
-        try {
-            return await originalCardRender.apply(this, [settings, ...args]);
-        } finally {
-            if (metric) {
-                metric.finished += 1;
-                metric.samples.push(performance.now() - startedAt);
-                updateEtaLine(page);
-            }
-        }
+    const oldCardRender = Card.prototype.render;
+    Card.prototype.render = async function(settings, ...args) {
+        const lp = renderingPage;
+        const s = lp ? state(lp) : null;
+        const m = s ? ((lp.useSlowConnectionMode || settings?.loadAvatars === false) ? s.slow : s.cards) : null;
+        if (m) { m.total += 1; paint(lp); }
+        const started = performance.now();
+        try { return await oldCardRender.apply(this, [settings, ...args]); }
+        finally { if (m) { m.done += 1; m.samples.push(performance.now() - started); paint(lp); } }
     };
 
-    const originalLoad = proto.load;
-    proto.load = async function(...args) {
-        const metrics = ensureMetrics(this);
-        metrics.phase = 'data';
-        resetMetric(metrics.normalData);
-        resetMetric(metrics.normalCards);
-        resetMetric(metrics.slowCards);
-        updateEtaLine(this);
-        const previous = activeDataPage;
-        activeDataPage = this;
-        try {
-            return await originalLoad.apply(this, args);
-        } finally {
-            activeDataPage = previous;
-            if (metrics.phase === 'data') metrics.phase = this.useSlowConnectionMode ? 'slow-cards' : 'cards';
-            updateEtaLine(this);
-        }
+    const oldLoad = LandingPage.prototype.load;
+    LandingPage.prototype.load = async function(...args) {
+        const s = state(this);
+        s.phase = this.startupFastTrackRequested ? 'slow' : 'data';
+        reset(s.data); reset(s.cards); reset(s.slow);
+        paint(this);
+        const prev = loadingPage;
+        loadingPage = this;
+        try { return await oldLoad.apply(this, args); }
+        finally { loadingPage = prev; if (s.phase === 'data') s.phase = this.useSlowConnectionMode ? 'slow' : 'cards'; paint(this); }
     };
 
-    const originalRenderCardsForCategory = proto.renderCardsForCategory;
-    proto.renderCardsForCategory = async function(root, category, ...args) {
-        const metrics = ensureMetrics(this);
-        const cards = category === 'search'
-            ? this.searchResults.slice(0, this.settings.numCards)
-            : (this.cardsByCategory[category] ?? []);
-        const metric = this.useSlowConnectionMode ? metrics.slowCards : metrics.normalCards;
-        resetMetric(metric, cards.length);
-        metrics.phase = this.useSlowConnectionMode ? 'slow-cards' : 'cards';
-        updateEtaLine(this);
-        const previous = activeRenderPage;
-        activeRenderPage = this;
-        try {
-            return await originalRenderCardsForCategory.apply(this, [root, category, ...args]);
-        } finally {
-            activeRenderPage = previous;
-            updateEtaLine(this);
-        }
+    const oldRenderCards = LandingPage.prototype.renderCardsForCategory;
+    LandingPage.prototype.renderCardsForCategory = async function(root, category, ...args) {
+        const s = state(this);
+        const cards = category === 'search' ? this.searchResults.slice(0, this.settings.numCards) : (this.cardsByCategory[category] ?? []);
+        const m = this.useSlowConnectionMode ? s.slow : s.cards;
+        reset(m, cards.length);
+        s.phase = this.useSlowConnectionMode ? 'slow' : 'cards';
+        paint(this);
+        const prev = renderingPage;
+        renderingPage = this;
+        try { return await oldRenderCards.apply(this, [root, category, ...args]); }
+        finally { renderingPage = prev; paint(this); }
     };
 
-    const originalRequestStartupFastTrack = proto.requestStartupFastTrack;
-    proto.requestStartupFastTrack = function(...args) {
-        const metrics = ensureMetrics(this);
-        metrics.phase = 'slow-cards';
+    const oldSlow = LandingPage.prototype.requestStartupFastTrack;
+    LandingPage.prototype.requestStartupFastTrack = function(...args) {
+        const s = state(this);
+        const eta = normalEta(s);
+        s.hadNormalEta = eta !== null;
+        s.lastNormalEta = eta;
+        if (s.phase !== 'waiting') s.phase = 'slow';
         this.useSlowConnectionMode = true;
         this.startupFastTrackRequested = true;
         this.getStartupFastTrackPromise?.();
-        updateEtaLine(this);
-        const result = originalRequestStartupFastTrack.apply(this, args);
+        paint(this);
+        const out = oldSlow.apply(this, args);
         this.startupFastTrackResolver?.('slow-mode');
         this.startupFastTrackResolver = null;
-        updateEtaLine(this);
-        return result;
+        paint(this);
+        return out;
     };
 
-    const restoreSheldLayer = (page)=>{
-        if (!page?.sheld) return;
-        page.sheld.style.zIndex = '';
-        if (!page.dom) {
-            page.sheld.style.opacity = '';
-            page.sheld.style.pointerEvents = '';
-        }
+    const oldStartup = LandingPage.prototype.renderStartupLoading;
+    LandingPage.prototype.renderStartupLoading = function(...args) {
+        const out = oldStartup.apply(this, args);
+        const s = state(this);
+        if (!['data','cards','slow'].includes(s.phase)) s.phase = 'waiting';
+        paint(this);
+        return out;
     };
 
-    const originalEndInput = proto.endInput;
-    proto.endInput = function(...args) {
-        const result = originalEndInput.apply(this, args);
-        restoreSheldLayer(this);
-        return result;
+    const oldProgress = LandingPage.prototype.setStartupLoadingProgress;
+    LandingPage.prototype.setStartupLoadingProgress = function(...args) { const out = oldProgress.apply(this, args); paint(this); return out; };
+
+    const oldEndInput = LandingPage.prototype.endInput;
+    LandingPage.prototype.endInput = function(...args) { const out = oldEndInput.apply(this, args); if (this.sheld) this.sheld.style.zIndex = ''; return out; };
+
+    const oldUnrender = LandingPage.prototype.unrender;
+    LandingPage.prototype.unrender = function(...args) {
+        const out = oldUnrender.apply(this, args);
+        if (this.sheld) { this.sheld.style.zIndex = ''; this.sheld.style.opacity = ''; this.sheld.style.pointerEvents = ''; }
+        return out;
     };
 
-    const originalUnrender = proto.unrender;
-    proto.unrender = function(...args) {
-        const result = originalUnrender.apply(this, args);
-        restoreSheldLayer(this);
-        return result;
-    };
-
-    const originalRenderStartupLoading = proto.renderStartupLoading;
-    proto.renderStartupLoading = function(...args) {
-        const keepSlow = this.useSlowConnectionMode || this.startupFastTrackRequested;
-        const result = originalRenderStartupLoading.apply(this, args);
-        if (keepSlow) {
-            this.useSlowConnectionMode = true;
-            this.startupFastTrackRequested = true;
-            this.getStartupFastTrackPromise?.();
-            if (this.startupSlowModeButtonEl) {
-                this.startupSlowModeButtonEl.disabled = true;
-                this.startupSlowModeButtonEl.textContent = 'Slow Connection Mode enabled';
-            }
-        }
-        updateEtaLine(this);
-        return result;
-    };
-
-    const originalSetStartupLoadingProgress = proto.setStartupLoadingProgress;
-    proto.setStartupLoadingProgress = function(...args) {
-        const result = originalSetStartupLoadingProgress.apply(this, args);
-        updateEtaLine(this);
-        return result;
-    };
-
-    const style = document.createElement('style');
-    style.textContent = `
-        body:not(:has(.stlp--container)) #sheld { z-index: auto !important; }
-        .stlp--startupLoadingEta {
-            margin-top: 0.55rem;
-            max-width: min(720px, 88vw);
-            font-size: 0.88em;
-            line-height: 1.35;
-            opacity: 0.78;
-            text-align: center;
-        }
-    `;
-    document.head.append(style);
+    if (!document.getElementById('stlp-eta-fix-style')) {
+        const style = document.createElement('style');
+        style.id = 'stlp-eta-fix-style';
+        style.textContent = '.stlp--startupLoadingEta{margin-top:.55rem;max-width:min(760px,88vw);font-size:.88em;line-height:1.35;opacity:.78;text-align:center}body:not(:has(.stlp--container)) #sheld{z-index:auto!important}';
+        document.head.append(style);
+    }
 };
 
-setTimeout(()=>{
-    patchLandingPageRuntime().catch(err=>console.warn('[STL] ETA patch failed', err));
-}, 0);
+setTimeout(()=>patch().catch(err=>console.warn('[STL] ETA patch failed', err)), 0);
