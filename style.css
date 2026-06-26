@@ -633,7 +633,7 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar > .stlp--lazyAvatarImg {
   opacity: 0;
-  transition: opacity 420ms ease;
+  transition: opacity 180ms ease;
   z-index: 2;
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar > .stlp--lazyAvatarImg.stlp--loaded {

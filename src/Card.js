@@ -296,7 +296,7 @@ export class Card {
             }));
             this.isAvatarLoaded = true;
             this.domAvatar.dataset.stlpLoaded = 'true';
-            setTimeout(()=>placeholder?.remove(), 450);
+            setTimeout(()=>placeholder?.remove(), 220);
         } catch (err) {
             if (!signal?.aborted) {
                 console.warn('[STL] lazy avatar failed', this.name, err);

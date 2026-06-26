@@ -8,7 +8,7 @@ import { appReady, debounceAsync, log } from '../index.js';
 import { Card } from './Card.js';
 import { waitForFrame } from './wait.js';
 
-const LAZY_AVATAR_CONCURRENCY = 3;
+const LAZY_AVATAR_CONCURRENCY = 12;
 const HIGH_RES_AVATAR_CONCURRENCY = 1;
 
 export class LandingPage {
