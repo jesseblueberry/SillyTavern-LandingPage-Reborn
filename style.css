@@ -67,6 +67,14 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
     transform: translate(-50%, -50%) translateX(calc(var(--stlp--offsetX) - 22px)) translateY(-8px) rotate(calc(var(--stlp--offsetR) - 6deg));
   }
 }
+@keyframes stlp--avatarSpin {
+  0% {
+    rotate: 0deg;
+  }
+  100% {
+    rotate: 360deg;
+  }
+}
 .stlp--container {
   --stlp--cardHeight: 200px;
   --stlp--cardWidth: calc(var(--stlp--cardHeight) / 144 * 96);
@@ -611,7 +619,6 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
   display: flex;
   justify-content: center;
   overflow: hidden;
-  --stlp--avatarLoadProgress: 0%;
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar > .stlp--avatarPlaceholder {
   position: absolute;
@@ -643,8 +650,11 @@ html > body.stlp--hideTopBar:has(.stlp--container) > #top-bar:hover + #top-setti
   translate: -50% 0;
   opacity: 0;
   pointer-events: none;
-  background: radial-gradient(circle, rgba(8 13 28 / 0.9) 0 43%, transparent 45%), conic-gradient(#78c7ff var(--stlp--avatarLoadProgress), rgba(255 255 255 / 0.18) 0);
+  border: 3px solid rgba(255 255 255 / 0.2);
+  border-top-color: #78c7ff;
+  background: rgba(8 13 28 / 0.45);
   box-shadow: 0 0 10px rgba(0 0 0 / 0.45);
+  animation: stlp--avatarSpin 900ms linear infinite;
   transition: opacity 160ms ease;
 }
 .stlp--container .stlp--wrapper .stlp--cards > .stlp--cardWrap > .stlp--card > .stlp--avatar.stlp--lazyAvatar.stlp--lazyAvatarLoading > .stlp--avatarPlaceholder {

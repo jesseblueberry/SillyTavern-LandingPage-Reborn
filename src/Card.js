@@ -19,12 +19,10 @@ const fitAvatarImage = (img)=>{
     img.style.marginRight = `calc(var(--stlp--cardHeight) / ${naturalHeight} * ${naturalWidth} / -2)`;
 };
 
-const loadDomImage = async(img, sources, { signal = null, onProgress = null } = {})=>{
+const loadDomImage = async(img, sources, { signal = null } = {})=>{
     return new Promise(resolve=>{
         let sourceIndex = 0;
-        let progress = 8;
         const cleanup = ()=>{
-            clearInterval(timer);
             img.removeEventListener('load', handleLoad);
             img.removeEventListener('error', handleError);
             signal?.removeEventListener('abort', handleAbort);
@@ -35,14 +33,11 @@ const loadDomImage = async(img, sources, { signal = null, onProgress = null } = 
                 resolve(false);
                 return;
             }
-            progress = Math.max(progress, sourceIndex === 0 ? 8 : 45);
-            onProgress?.(progress);
             img.src = sources[sourceIndex];
         };
         const handleLoad = ()=>{
             cleanup();
             fitAvatarImage(img);
-            onProgress?.(100);
             resolve(true);
         };
         const handleError = ()=>{
@@ -53,10 +48,6 @@ const loadDomImage = async(img, sources, { signal = null, onProgress = null } = 
             cleanup();
             resolve(false);
         };
-        const timer = setInterval(()=>{
-            progress = Math.min(92, progress + 3);
-            onProgress?.(progress);
-        }, 180);
         img.addEventListener('load', handleLoad);
         img.addEventListener('error', handleError);
         signal?.addEventListener('abort', handleAbort, { once:true });
@@ -217,23 +208,10 @@ export class Card {
         return (source ?? []).filter(Boolean).slice(0, num);
     }
 
-    setAvatarProgress(value) {
-        if (!this.domAvatar) return;
-        this.domAvatar.style.setProperty('--stlp--avatarLoadProgress', `${Math.max(0, Math.min(100, value))}%`);
-    }
-
-    getMemberSources(mem, settings) {
-        const avatarUrl = `/characters/${mem.avatar}`;
-        if (!settings.showExpression) return [avatarUrl];
-        const costume = this.chatMetadata?.triggerCards?.costumes?.[mem.name] ?? mem.name;
-        const expressionUrls = (settings.extensions ?? ['png']).map(ext=>`/characters/${costume}/${settings.expression}.${ext}`);
-        return [...expressionUrls, avatarUrl];
-    }
-
-    getCardSources(settings) {
+    getCardSources() {
         if (this.isGroup) return [this.avatar];
         const member = this.members.find(Boolean);
-        return member ? this.getMemberSources(member, settings) : [`/characters/${this.avatar}`];
+        return member ? [`/characters/${member.avatar}`] : [`/characters/${this.avatar}`];
     }
 
     restoreHydratedAvatar() {
@@ -252,61 +230,24 @@ export class Card {
         });
     }
 
-    async hydrateAvatar(settings, { signal = null, onProgress = null } = {}) {
+    async hydrateAvatar(settings, { signal = null } = {}) {
         if (!this.domAvatar || this.isAvatarLoaded || this.isAvatarLoading) return;
         this.isAvatarLoading = true;
         this.domAvatar.dataset.stlpLoading = 'true';
         this.domAvatar.classList.add('stlp--lazyAvatarLoading');
-        this.setAvatarProgress(5);
-        onProgress?.(5);
 
         const placeholder = this.domAvatar.querySelector('.stlp--avatarPlaceholder');
         const imgs = [];
         try {
-            if (this.isGroup && settings.showExpression) {
-                const members = this.getLastMembers(settings.numAvatars);
-                const total = Math.max(members.length, 1);
-                for (let i = 0; i < members.length; i++) {
-                    if (signal?.aborted) return;
-                    const mem = members[i];
-                    const img = makeAvatarImage('');
-                    this.domAvatar.append(img);
-                    imgs.push(img);
-                    const loaded = await loadDomImage(img, this.getMemberSources(mem, settings), {
-                        signal,
-                        onProgress: progress=>{
-                            const cardProgress = Math.round(((i + (progress / 100)) / total) * 90);
-                            this.setAvatarProgress(cardProgress);
-                            onProgress?.(cardProgress);
-                        },
-                    });
-                    if (loaded) {
-                        img.classList.add('stlp--loaded');
-                    } else {
-                        img.remove();
-                        imgs.splice(imgs.indexOf(img), 1);
-                    }
-                    const progress = Math.round(((i + 1) / total) * 90);
-                    this.setAvatarProgress(progress);
-                    onProgress?.(progress);
-                }
+            const img = makeAvatarImage('');
+            this.domAvatar.append(img);
+            imgs.push(img);
+            const loaded = await loadDomImage(img, this.getCardSources(), { signal });
+            if (loaded) {
+                img.classList.add('stlp--loaded');
             } else {
-                const img = makeAvatarImage('');
-                this.domAvatar.append(img);
-                imgs.push(img);
-                const loaded = await loadDomImage(img, this.getCardSources(settings), {
-                    signal,
-                    onProgress: progress=>{
-                        this.setAvatarProgress(progress);
-                        onProgress?.(progress);
-                    },
-                });
-                if (loaded) {
-                    img.classList.add('stlp--loaded');
-                } else {
-                    img.remove();
-                    imgs.splice(imgs.indexOf(img), 1);
-                }
+                img.remove();
+                imgs.splice(imgs.indexOf(img), 1);
             }
 
             if (!imgs.length || !this.domAvatar?.isConnected || signal?.aborted) return;
@@ -320,8 +261,6 @@ export class Card {
             }));
             this.isAvatarLoaded = true;
             this.domAvatar.dataset.stlpLoaded = 'true';
-            this.setAvatarProgress(100);
-            onProgress?.(100);
             setTimeout(()=>placeholder?.remove(), 450);
         } catch (err) {
             if (!signal?.aborted) {
@@ -382,7 +321,6 @@ export class Card {
                 const ava = document.createElement('div'); {
                     this.domAvatar = ava;
                     ava.classList.add('stlp--avatar', 'stlp--lazyAvatar');
-                    ava.style.setProperty('--stlp--avatarLoadProgress', '0%');
                     const placeholder = document.createElement('div'); {
                         placeholder.classList.add('stlp--avatarPlaceholder', 'stlp--avatarPlaceholderName');
                         placeholder.textContent = this.name || (this.isGroup ? 'Group' : 'Character');

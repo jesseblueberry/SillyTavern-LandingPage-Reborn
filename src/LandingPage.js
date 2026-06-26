@@ -8,6 +8,8 @@ import { appReady, debounceAsync, log } from '../index.js';
 import { Card } from './Card.js';
 import { waitForFrame } from './wait.js';
 
+const LAZY_AVATAR_CONCURRENCY = 3;
+
 export class LandingPage {
     /**@type {Card[]}*/ cards = [];
     /**@type {Object.<'favorites'|'recents'|'search', Card[]>}*/ cardsByCategory = { favorites:[], recents:[], search:[] };
@@ -52,10 +54,9 @@ export class LandingPage {
     /**@type {HTMLElement}*/ startupLoadingBarEl;
     /**@type {number}*/ startupLoadingProgress = 0;
     /**@type {number|null}*/ startupLoadingTimer = null;
-    /**@type {number}*/ startupLoadingStartedAt = 0;
     /**@type {IntersectionObserver|null}*/ lazyAvatarObserver = null;
     /**@type {Array<{card:Card,index:number,seenAt:number}>}*/ lazyAvatarQueue = [];
-    /**@type {boolean}*/ lazyAvatarLoading = false;
+    /**@type {number}*/ lazyAvatarLoadingCount = 0;
     /**@type {AbortController|null}*/ lazyAvatarAbortController = null;
     /**@type {number}*/ lazyAvatarRunId = 0;
     /**@type {AbortController|null}*/ backgroundAbortController = null;
@@ -606,7 +607,7 @@ export class LandingPage {
         this.lazyAvatarObserver?.disconnect();
         this.lazyAvatarObserver = null;
         this.lazyAvatarQueue = [];
-        this.lazyAvatarLoading = false;
+        this.lazyAvatarLoadingCount = 0;
         this.lazyAvatarAbortController?.abort();
         this.lazyAvatarAbortController = null;
     }
@@ -619,11 +620,13 @@ export class LandingPage {
     }
 
     async processLazyAvatarQueue() {
-        if (this.lazyAvatarLoading) return;
-        this.lazyAvatarLoading = true;
-        this.lazyAvatarAbortController = new AbortController();
+        if (this.lazyAvatarLoadingCount >= LAZY_AVATAR_CONCURRENCY) return;
+        if (!this.lazyAvatarAbortController) {
+            this.lazyAvatarAbortController = new AbortController();
+        }
         const signal = this.lazyAvatarAbortController.signal;
         const runId = this.lazyAvatarRunId;
+        this.lazyAvatarLoadingCount++;
         try {
             while (runId === this.lazyAvatarRunId && this.lazyAvatarQueue.length) {
                 this.lazyAvatarQueue.sort((a,b)=>a.seenAt - b.seenAt || a.index - b.index);
@@ -631,20 +634,17 @@ export class LandingPage {
                 if (!card.dom?.isConnected || card.isAvatarLoaded) continue;
                 card.dom.setAttribute('aria-busy', 'true');
                 this.setStartupLoadingDetail(`Loading card art ${index + 1}/${this.cards.length}: ${card.name}`);
-                await card.hydrateAvatar(this.settings, {
-                    signal,
-                    onProgress: progress=>{
-                        card.dom?.style.setProperty('--stlp--avatarLoadProgress', `${progress}%`);
-                    },
-                });
+                await card.hydrateAvatar(this.settings, { signal });
                 card.dom?.removeAttribute('aria-busy');
                 this.setStartupLoadingDetail(`Loaded card art ${index + 1}/${this.cards.length}: ${card.name}`);
                 await waitForFrame();
             }
         } finally {
             if (runId === this.lazyAvatarRunId) {
-                this.lazyAvatarLoading = false;
-                this.lazyAvatarAbortController = null;
+                this.lazyAvatarLoadingCount = Math.max(0, this.lazyAvatarLoadingCount - 1);
+                if (this.lazyAvatarLoadingCount === 0 && !this.lazyAvatarQueue.length) {
+                    this.lazyAvatarAbortController = null;
+                }
             }
         }
     }
@@ -937,12 +937,6 @@ export class LandingPage {
                 inputDisplayContainer.append(inputDisplay);
             }
         }
-        this.setStartupLoadingProgress(96, 'Ready!');
-        if (this.startupLoadingStartedAt) {
-            const elapsed = Date.now() - this.startupLoadingStartedAt;
-            const remaining = Math.max(0, 850 - elapsed);
-            if (remaining) await delay(remaining);
-        }
         this.setStartupLoadingProgress(100, 'Ready!');
         this.teardownStartupLoading(true);
     }
@@ -985,18 +979,17 @@ export class LandingPage {
             }
             this.dom.append(loading);
         }
-        this.startupLoadingStartedAt = Date.now();
         this.startupLoadingProgress = 5;
         this.setStartupLoadingProgress(5, 'Starting landing page…');
-        this.setStartupLoadingDetail('Waiting for SillyTavern to finish initializing…');
+        this.setStartupLoadingDetail('Preparing the landing page shell…');
         if (this.startupLoadingTimer !== null) clearInterval(this.startupLoadingTimer);
         this.startupLoadingTimer = setInterval(()=>{
-            if (this.startupLoadingProgress >= 45) return;
+            if (this.startupLoadingProgress >= 28) return;
             this.setStartupLoadingProgress(this.startupLoadingProgress + 1);
         }, 170);
     }
     setStartupLoadingProgress(value, label = null) {
-        this.startupLoadingProgress = Math.max(0, Math.min(100, value));
+        this.startupLoadingProgress = Math.max(this.startupLoadingProgress, Math.max(0, Math.min(100, value)));
         if (this.startupLoadingBarEl) {
             this.startupLoadingBarEl.style.width = `${this.startupLoadingProgress}%`;
         }
