@@ -3,7 +3,7 @@
     "loading_order": 100,
     "requires": [],
     "optional": [],
-    "js": "index.js",
+    "js": "src/entry.js",
     "css": "style.css",
     "author": "LenAnderson",
     "version": "2.17.2",
